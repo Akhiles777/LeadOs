@@ -234,10 +234,13 @@ follow-up, просьба об отзыве и рекомендации, пре�
 1. **База.** Vercel → Storage → Marketplace → **Neon** (или Supabase). Нужны два адреса одной базы:
    - `DATABASE_URL` — **пулинговый** (у Neon хост с `-pooler`) — для приложения;
    - `DIRECT_URL` — прямой — для миграций.
-2. **Проект.** Vercel → Add New → Project → репозиторий, Root Directory — папка `leados`.
-   - Build Command: `pnpm build:vercel` (применяет миграции и собирает).
-   - Переменная `ENABLE_EXPERIMENTAL_COREPACK=1` — чтобы Vercel взял pnpm нужной версии.
-3. **Переменные** (Settings → Environment Variables, Production): `DATABASE_URL`, `DIRECT_URL`, `BASIC_AUTH_USER`,
+2. **Проект.** Vercel → Add New → Project → репозиторий. Root Directory менять не нужно — приложение в корне.
+   Build Command тоже настраивать не нужно: Vercel сам запускает `vercel-build` из `package.json`, который применяет
+   миграции, генерирует Prisma Client и собирает приложение.
+3. **Переменные** (Settings → Environment Variables, Production). Если база подключена через интеграцию
+   (Prisma Postgres, Neon, Supabase), её переменные (`POSTGRES_URL`, `PRISMA_DATABASE_URL`, в том числе с префиксом
+   проекта вроде `leados_POSTGRES_URL`) приложение понимает само — отдельный `DATABASE_URL` можно не создавать.
+   Остальное: `BASIC_AUTH_USER`,
    `BASIC_AUTH_PASSWORD` (длинный — это единственная защита входа), `APP_URL` (адрес проекта, `https://….vercel.app`
    или свой домен), `CRON_SECRET` и `API_TOKEN` (`openssl rand -hex 32`), `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`.
 4. **Deploy.** После сборки открой адрес, войди, зайди в **«Настройки»** — все обязательные пункты зелёные.
@@ -319,7 +322,8 @@ cd worker/telegram && .venv/bin/python -m unittest discover -s tests
 | Новые лиды не оцениваются | Сервер: не запущен `pnpm worker:ai`. Vercel: смотри ошибки очереди на странице «AI» |
 | Утренняя сводка не пришла | «Настройки»: бот и чат подключены? журнал отправок там же. Vercel: задан `CRON_SECRET`, выключена Deployment Protection |
 | Telegram-воркер «молчит» | Процесс запущен? `LEADOS_URL`/`LEADOS_API_TOKEN` верные? На Vercel — Deployment Protection выключена |
-| «Нет связи с базой данных» | Проверь `DATABASE_URL`; на Vercel — пулинговый адрес и что база не спит |
+| «Нет связи с базой данных» | Открой `/api/health` — он назовёт причину: `no_database_url`, `no_tables` (не прошли миграции), `bad_credentials`, `host_not_found`, `too_many_connections` |
+| Сборка падает с `Can't resolve '@/generated/prisma/client'` | Prisma Client генерируется командой сборки; проверь, что Build Command не переопределён в панели |
 | Выручка в аналитике меньше, чем на самом деле | Не отмечены оплаты — дашборд «Сделки без отмеченной оплаты» |
 | После импорта старых сделок на дашборде много «Предложить доработки» | Так и задумано: прошлые клиенты — самый тёплый источник новых заказов. Отработанных отмечай галочкой в сделке |
 | `prisma migrate dev` отказывается работать | Применяй миграции через `pnpm db:deploy` |
