@@ -1,6 +1,7 @@
 import { connection } from "next/server";
 import { isAiConfigured } from "@/ai/client";
 import { inlineJobsEnabled } from "@/ai/inline";
+import { resolveDatabaseUrl } from "@/lib/database-url";
 import { db } from "@/lib/db";
 import { formatDate } from "@/lib/leads";
 import { getNotificationSettings } from "@/lib/notify/settings";
@@ -16,7 +17,7 @@ function environmentChecks(): Check[] {
   const prod = process.env.NODE_ENV === "production";
   const has = (k: string, min = 1) => (process.env[k]?.trim().length ?? 0) >= min;
   return [
-    { label: "База данных", ok: has("DATABASE_URL"), hint: "DATABASE_URL", required: true },
+    { label: "База данных", ok: Boolean(resolveDatabaseUrl()), hint: "DATABASE_URL (подходят и переменные интеграции: POSTGRES_URL, PRISMA_DATABASE_URL)", required: true },
     { label: "Пароль на вход", ok: has("BASIC_AUTH_USER") && has("BASIC_AUTH_PASSWORD", 12), hint: "BASIC_AUTH_USER и BASIC_AUTH_PASSWORD (не короче 12 символов)", required: prod },
     { label: "Публичный адрес", ok: has("APP_URL"), hint: "APP_URL — ссылки в уведомлениях, API и закладках", required: prod },
     { label: "Токен API", ok: has("API_TOKEN", 16), hint: "API_TOKEN — для Telegram-воркера", required: false },
@@ -25,7 +26,7 @@ function environmentChecks(): Check[] {
     { label: "Telegram-бот", ok: botConfigured(), hint: "TELEGRAM_BOT_TOKEN", required: false },
     {
       label: "Пулинг подключений к базе",
-      ok: !vercel || /pooler|pgbouncer|-pooler\.|pooling/i.test(process.env.DATABASE_URL ?? ""),
+      ok: !vercel || /pooler|pgbouncer|-pooler\.|pooling|prisma\.io/i.test(resolveDatabaseUrl() ?? ""),
       hint: "На Vercel используй пулинговый адрес базы (у Neon — хост с -pooler)",
       required: false,
     },

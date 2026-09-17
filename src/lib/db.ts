@@ -1,5 +1,6 @@
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/generated/prisma/client";
+import { resolveDatabaseUrl } from "@/lib/database-url";
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
@@ -7,8 +8,10 @@ function createClient() {
   // На Vercel каждый экземпляр функции держит свой пул — маленький пул и пулинговый URL базы (Neon/Supabase),
   // иначе быстро кончаются подключения. На VPS один процесс — можно больше.
   const max = Number(process.env.DB_POOL_MAX) || (process.env.VERCEL ? 3 : 10);
+  const connectionString = resolveDatabaseUrl();
+  if (!connectionString) console.error("[LeadOS] Не найден адрес базы: задай DATABASE_URL");
   const adapter = new PrismaPg({
-    connectionString: process.env.DATABASE_URL,
+    connectionString: connectionString ?? undefined,
     max,
     connectionTimeoutMillis: 10_000,
     idleTimeoutMillis: 30_000,

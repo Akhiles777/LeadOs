@@ -2,6 +2,7 @@
 // npm install --save-dev prisma dotenv
 import "dotenv/config";
 import { defineConfig } from "prisma/config";
+import { resolveDirectUrl } from "./src/lib/database-url";
 
 export default defineConfig({
   schema: "prisma/schema.prisma",
@@ -11,6 +12,6 @@ export default defineConfig({
   datasource: {
     // Миграции идут по прямому адресу базы: через пулер (Neon -pooler, PgBouncer) они могут не пройти.
     // Приложение само использует DATABASE_URL (src/lib/db.ts).
-    url: process.env["DIRECT_URL"] || process.env["DATABASE_URL"],
+    url: resolveDirectUrl() ?? undefined,
   },
 });
