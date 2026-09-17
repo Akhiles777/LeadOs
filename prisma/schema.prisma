@@ -1,0 +1,367 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Lead {
+  id             String     @id @default(cuid())
+  source         Source
+  sourceRef      String? // ссылка на Kwork-заказ, ID канала, место 2GIS и т.д.
+  title          String
+  rawText        String     @db.Text // исходный текст заказа/поста
+  category       String?
+  budgetMin      Int?
+  budgetMax      Int?
+  contactName    String?
+  contactPhone   String?
+  contactTg      String?
+  contactEmail   String?
+  website        String?
+  region         String?
+  status         LeadStatus @default(NEW)
+  // Индекс самого дальнего этапа воронки, до которого дошёл лид (NEW=0 … WON=5).
+  // Не уменьшается при LOST/SKIPPED — нужен для честной конверсии между этапами.
+  furthestStage  Int        @default(0)
+  score          Int? // 0-100, ставит AI-модуль оценки (фаза 3)
+  scoreReason    String?    @db.Text
+  redFlags       String[]
+  aiVerdict      AiVerdict? // рекомендация AI: брать / подумать / пропустить
+  aiAssessment   Json? // полный ответ оценки: причины, флаги с пояснениями, вопросы заказчику
+  scoredAt       DateTime?
+  followUpAt     DateTime? // вручную назначенная дата следующего касания
+  importBatch    String? // id пачки импорта из таблицы — чтобы можно было отменить импорт целиком
+  // Кто из клиентов порекомендовал — для лидов-рекомендаций.
+  referredById   String?
+  referredBy     Lead?      @relation("Referrals", fields: [referredById], references: [id], onDelete: SetNull)
+  referrals      Lead[]     @relation("Referrals")
+  // Результат автоматической проверки сайта компании (src/lib/site-check.ts) — для холодных лидов.
+  siteCheck      Json?
+  // Хэш нормализованного текста — ловит один и тот же пост, разосланный по разным каналам.
+  contentHash    String?
+  // Последнее «движение» по лиду: смена статуса или активность. Основа для поиска зависших.
+  lastActivityAt DateTime   @default(now())
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  activities Activity[]
+  offers     OfferDraft[]
+  deal       Deal?
+  feedback   AssessmentFeedback[]
+
+  // Дедупликация: один и тот же заказ/пост из источника попадает в систему один раз.
+  // NULL в sourceRef не конфликтуют — ручные лиды без ссылки не ограничены.
+  @@unique([source, sourceRef])
+  @@index([status])
+  @@index([source])
+  @@index([lastActivityAt])
+  @@index([contentHash])
+  @@index([contactPhone])
+  @@index([importBatch])
+  @@index([createdAt])
+  @@index([followUpAt])
+  @@index([referredById])
+}
+
+enum Source {
+  KWORK
+  TELEGRAM
+  COLD_LOCAL
+  MANUAL
+  REFERRAL
+}
+
+enum LeadStatus {
+  NEW // только попал в систему
+  QUALIFIED // AI/ты решили, что стоит внимания
+  CONTACTED // отправлен оффер/сделан звонок
+  RESPONDED // клиент ответил
+  NEGOTIATING // идёт обсуждение условий
+  WON // сделка закрыта
+  LOST // отказ / молчание
+  SKIPPED // сознательно пропущен
+}
+
+model Activity {
+  id        String       @id @default(cuid())
+  leadId    String
+  lead      Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  type      ActivityType
+  note      String       @db.Text
+  createdAt DateTime     @default(now())
+
+  @@index([leadId, createdAt])
+}
+
+enum ActivityType {
+  NOTE
+  CALL
+  MESSAGE_SENT
+  MESSAGE_RECEIVED
+  STATUS_CHANGE
+  FOLLOW_UP_DUE
+}
+
+model OfferDraft {
+  id        String    @id @default(cuid())
+  leadId    String
+  lead      Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  channel   String // "kwork_response" | "telegram_reply" | "cold_message" | "cold_call_script" | "follow_up"
+  text      String    @db.Text
+  notes     String?   @db.Text // пояснение AI: какой угол выбран, какие кейсы использованы
+  aiText    String?   @db.Text // текст в том виде, как его написал AI — для оценки, насколько его правят
+  model     String? // null — написано вручную
+  approved  Boolean   @default(false)
+  sentAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([leadId])
+  @@index([channel, sentAt])
+}
+
+model Deal {
+  id              String      @id @default(cuid())
+  leadId          String      @unique
+  lead            Lead        @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  amount          Int? // сумма договора за основную работу (без доп. опций и чаевых)
+  paymentPlan     PaymentPlan @default(FULL)
+  stage           String      @default("Старт") // произвольные этапы проекта
+  startedAt       DateTime?
+  closedAt        DateTime?
+  // Когда попросить отзыв/рекомендацию и когда предложить доработки — для повторных продаж.
+  referralAskedAt DateTime?
+  upsellAt        DateTime?
+
+  payments Payment[]
+  addons   DealAddon[]
+
+  @@index([closedAt])
+}
+
+enum PaymentPlan {
+  FULL // целиком
+  INSTALLMENTS // частями по графику
+}
+
+enum PaymentKind {
+  PART // часть по графику или оплата целиком
+  TIP // чаевые — сверх договора
+  ADDON // оплата доп. опции
+}
+
+/// Платёж по сделке: плановый (dueDate, без paidAt) или полученный (paidAt).
+model Payment {
+  id        String      @id @default(cuid())
+  dealId    String
+  deal      Deal        @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  kind      PaymentKind @default(PART)
+  title     String? // «Предоплата 50%», «Этап 2: интеграция»
+  amount    Int
+  dueDate   DateTime?
+  paidAt    DateTime?
+  method    String? // карта, СБП, Kwork, наличные, счёт
+  addonId   String?
+  addon     DealAddon?  @relation(fields: [addonId], references: [id], onDelete: SetNull)
+  note      String?
+  createdAt DateTime    @default(now())
+
+  @@index([dealId])
+  @@index([paidAt])
+  @@index([dueDate])
+}
+
+enum AddonStatus {
+  PROPOSED
+  ACCEPTED
+  DECLINED
+}
+
+/// Доп. опция к сделке: предложена → принята/отклонена. Принятые увеличивают сумму сделки.
+model DealAddon {
+  id          String      @id @default(cuid())
+  dealId      String
+  deal        Deal        @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  title       String
+  description String?     @db.Text
+  price       Int
+  status      AddonStatus @default(PROPOSED)
+  source      String? // null — вручную, "ai" — предложено AI
+  createdAt   DateTime    @default(now())
+  decidedAt   DateTime?
+  payments    Payment[]
+
+  @@index([dealId])
+}
+
+model PersonalBrandRule {
+  id       String @id @default(cuid())
+  category String // "стиль_отклика" | "запрещённые_проекты" | "стек" | "тон"
+  content  String @db.Text
+}
+
+// ─── Telegram ────────────────────────────────────────────────────────────────
+
+model TelegramChannel {
+  id            String            @id @default(cuid())
+  // Метка точного peer id (-100…) из Telethon; для публичных каналов, добавленных по @username, заполняет воркер.
+  peerId        String?           @unique
+  username      String?           @unique // без @
+  title         String?
+  enabled       Boolean           @default(true)
+  filterMode    ChannelFilterMode @default(KEYWORDS)
+  lastMessageId Int               @default(0) // до какого поста канал уже прочитан
+  lastCheckedAt DateTime?
+  lastError     String?
+  postsSeen     Int               @default(0)
+  leadsCreated  Int               @default(0)
+  createdAt     DateTime          @default(now())
+}
+
+enum ChannelFilterMode {
+  KEYWORDS // лидом становится пост, прошедший ключевые слова
+  ALL // канал — чистая лента заказов: берём всё, кроме стоп-слов
+}
+
+model KeywordRule {
+  id    String      @id @default(cuid())
+  kind  KeywordKind
+  value String
+
+  @@unique([kind, value])
+}
+
+enum KeywordKind {
+  INCLUDE
+  EXCLUDE
+}
+
+/// Пульс фоновых воркеров: когда последний раз выходили на связь и что сообщили.
+model WorkerHeartbeat {
+  name   String   @id
+  seenAt DateTime @default(now())
+  info   Json?
+}
+
+/// Настройки приложения, которые меняются из интерфейса (регион и ниши холодного поиска и т.п.).
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+// ─── AI ──────────────────────────────────────────────────────────────────────
+
+enum AiVerdict {
+  TAKE
+  CONSIDER
+  SKIP
+}
+
+/// Реальные проекты — единственные примеры, на которые AI может ссылаться в откликах и скриптах.
+model PortfolioCase {
+  id        String   @id @default(cuid())
+  title     String // «StoreOS — учёт для розницы»
+  niches    String // для кого подходит: «розница, магазины, гастрономы»
+  summary   String   @db.Text // что сделано и что это дало клиенту
+  stack     String?
+  url       String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum AiJobType {
+  SCORE_LEAD
+  FOLLOW_UP
+  DIGEST
+}
+
+enum AiJobStatus {
+  PENDING
+  RUNNING
+  DONE
+  FAILED
+}
+
+/// Очередь фоновых AI-задач в Postgres (FOR UPDATE SKIP LOCKED) — без Redis.
+model AiJob {
+  id         String      @id @default(cuid())
+  type       AiJobType
+  leadId     String?
+  status     AiJobStatus @default(PENDING)
+  attempts   Int         @default(0)
+  runAfter   DateTime    @default(now())
+  lockedAt   DateTime?
+  error      String?     @db.Text
+  createdAt  DateTime    @default(now())
+  finishedAt DateTime?
+
+  @@index([status, runAfter])
+  @@index([type, leadId, status])
+}
+
+/// Каждый вызов модели: для расходов и разбора ошибок.
+model AiCall {
+  id                  String   @id @default(cuid())
+  purpose             String // assess | offer | call_script | follow_up | digest
+  model               String
+  leadId              String?
+  inputTokens         Int      @default(0)
+  outputTokens        Int      @default(0)
+  cacheReadTokens     Int      @default(0)
+  cacheCreationTokens Int      @default(0)
+  costUsd             Float    @default(0)
+  durationMs          Int      @default(0)
+  ok                  Boolean
+  error               String?  @db.Text
+  createdAt           DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+/// Ежедневная сводка новых лидов, отсортированная по оценке.
+model Digest {
+  id          String   @id @default(cuid())
+  day         String   @unique // YYYY-MM-DD по Москве
+  periodStart DateTime
+  periodEnd   DateTime
+  leadIds     String[] // по убыванию оценки
+  summary     Json? // ответ AI: заголовок, топ с пояснениями, что можно пропустить
+  createdAt   DateTime @default(now())
+}
+
+/// Поправка к оценке AI: «на самом деле этот лид стоило/не стоило брать, потому что…».
+/// Последние поправки попадают в промпт оценки как опыт — так оценка подстраивается под тебя.
+model AssessmentFeedback {
+  id             String     @id @default(cuid())
+  leadId         String
+  lead           Lead       @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  aiScore        Int?
+  aiVerdict      AiVerdict?
+  correctVerdict AiVerdict
+  note           String     @db.Text
+  createdAt      DateTime   @default(now())
+
+  @@index([createdAt])
+}
+
+/// Отправленные уведомления: ключ не даёт отправить одно и то же дважды (повтор cron, два воркера).
+model NotificationLog {
+  key    String   @id // "daily:2026-09-17", "hot:<leadId>"
+  sentAt DateTime @default(now())
+  ok     Boolean
+  error  String?  @db.Text
+}
+
+/// Пачка импорта из таблицы.
+model ImportBatch {
+  id        String   @id @default(cuid())
+  fileName  String?
+  created   Int      @default(0)
+  skipped   Int      @default(0)
+  createdAt DateTime @default(now())
+}

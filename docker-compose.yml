@@ -1,0 +1,87 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: leados
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задай POSTGRES_PASSWORD}
+      POSTGRES_DB: leados
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U leados"]
+      interval: 5s
+      retries: 10
+
+  migrate:
+    build: { context: ., target: migrate }
+    environment:
+      DATABASE_URL: postgresql://leados:${POSTGRES_PASSWORD}@db:5432/leados
+    depends_on:
+      db: { condition: service_healthy }
+
+  app:
+    build: { context: ., target: runner }
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://leados:${POSTGRES_PASSWORD}@db:5432/leados
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:?задай BASIC_AUTH_USER}
+      BASIC_AUTH_PASSWORD: ${BASIC_AUTH_PASSWORD:?задай BASIC_AUTH_PASSWORD}
+      API_TOKEN: ${API_TOKEN:?задай API_TOKEN}
+      APP_URL: ${APP_URL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-claude-opus-5}
+      AI_AUTO_SCORE: ${AI_AUTO_SCORE:-true}
+      # На VPS AI-задачи выполняет сервис ai-worker, а не веб-процесс
+      AI_INLINE_JOBS: "false"
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Europe/Moscow}
+      STALE_DAYS: ${STALE_DAYS:-5}
+      TZ: Europe/Moscow
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    ports:
+      - "127.0.0.1:3100:3000" # наружу — через nginx/caddy рядом со StoreOS
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  ai-worker:
+    build: { context: ., target: ai-worker }
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://leados:${POSTGRES_PASSWORD}@db:5432/leados
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?задай ANTHROPIC_API_KEY}
+      AI_MODEL: ${AI_MODEL:-claude-opus-5}
+      AI_AUTO_SCORE: ${AI_AUTO_SCORE:-true}
+      AI_WORKER_CONCURRENCY: ${AI_WORKER_CONCURRENCY:-2}
+      DIGEST_HOUR: ${DIGEST_HOUR:-8}
+      STALE_DAYS: ${STALE_DAYS:-5}
+      APP_URL: ${APP_URL:-}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Europe/Moscow}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      TZ: Europe/Moscow
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  telegram:
+    build: ./worker/telegram
+    profiles: ["telegram"]
+    restart: unless-stopped
+    environment:
+      TG_API_ID: ${TG_API_ID:?задай TG_API_ID}
+      TG_API_HASH: ${TG_API_HASH:?задай TG_API_HASH}
+      TG_SESSION: ${TG_SESSION:?задай TG_SESSION (worker/telegram/login.py)}
+      LEADOS_URL: http://app:3000
+      LEADOS_API_TOKEN: ${API_TOKEN}
+      POLL_INTERVAL: ${TG_POLL_INTERVAL:-300}
+      BACKFILL_LIMIT: ${TG_BACKFILL_LIMIT:-50}
+    depends_on:
+      - app
+
+volumes:
+  pgdata:

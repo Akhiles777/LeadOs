@@ -6,21 +6,46 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:studio": "prisma studio",
+    "postinstall": "prisma generate",
+    "typecheck": "tsc --noEmit",
+    "worker:ai": "tsx --tsconfig tsconfig.json src/worker/ai.ts",
+    "test:ai": "tsx --tsconfig tsconfig.json scripts/ai-smoke.ts",
+    "test:analytics": "tsx --tsconfig tsconfig.json scripts/analytics-check.ts",
+    "test:time": "tsx --tsconfig tsconfig.json scripts/time-check.ts && APP_TIMEZONE=America/New_York tsx --tsconfig tsconfig.json scripts/time-check.ts",
+    "test:money": "tsx --tsconfig tsconfig.json scripts/money-check.ts",
+    "test:notify": "tsx --tsconfig tsconfig.json scripts/notify-check.ts",
+    "test:import": "tsx --tsconfig tsconfig.json scripts/import-check.ts",
+    "test:import-db": "tsx --tsconfig tsconfig.json scripts/import-db-check.ts",
+    "test": "pnpm test:time && pnpm test:money && pnpm test:analytics && pnpm test:import && pnpm test:import-db && pnpm test:notify && pnpm test:ai",
+    "build:vercel": "prisma migrate deploy && next build"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.126.0",
+    "@prisma/adapter-pg": "7.10.0",
+    "@prisma/client": "7.10.0",
     "next": "16.3.5",
+    "pg": "^8.23.0",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "dotenv": "^17.4.2",
     "eslint": "^9",
     "eslint-config-next": "16.3.5",
+    "prisma": "7.10.0",
     "tailwindcss": "^4",
+    "tsx": "^4.23.13",
     "typescript": "^5"
   },
   "packageManager": "pnpm@11.15.1"
