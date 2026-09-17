@@ -5,6 +5,61 @@ import { db } from "@/lib/db";
 import type { LeadInput } from "@/lib/lead-input";
 import { normalizeSourceRef } from "@/lib/source-ref";
 
+/** Название компании без кавычек, регистра и лишних слов — чтобы «Дентал Хаус» и «Дентал Хаус | стоматология» совпали. */
+function companyKey(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/["«»„“”'`]/g, "")
+    .split(/[|(/,]/)[0]
+    .replace(/\b(ооо|ип|зао|оао|сеть|компания|клиника|стоматология|магазин|салон|центр)\b/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+/**
+ * Компания уже найдена автоматически (OpenStreetMap), а сейчас её карточку открыли на картах —
+ * дописываем телефон и сайт в тот же лид вместо дубля.
+ */
+export async function findCompanyToEnrich(input: LeadInput): Promise<string | null> {
+  if (input.source !== "COLD_LOCAL" || !input.contactPhone || !input.title) return null;
+  const key = companyKey(input.title);
+  if (key.length < 4) return null;
+
+  const candidates = await db.lead.findMany({
+    where: {
+      source: "COLD_LOCAL",
+      contactPhone: null,
+      ...(input.region ? { region: { equals: input.region, mode: "insensitive" } } : {}),
+    },
+    orderBy: { createdAt: "desc" },
+    take: 200,
+    select: { id: true, title: true },
+  });
+  const hit = candidates.find((c) => {
+    const other = companyKey(c.title);
+    return other.length >= 4 && (other === key || other.includes(key) || key.includes(other));
+  });
+  return hit?.id ?? null;
+}
+
+/** Дописывает то, чего не хватало: телефон, сайт, нишу и ссылку на карточку. */
+export async function enrichCompany(leadId: string, input: LeadInput): Promise<void> {
+  const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId } });
+  await db.lead.update({
+    where: { id: leadId },
+    data: {
+      contactPhone: lead.contactPhone ?? input.contactPhone,
+      website: lead.website ?? input.website,
+      category: lead.category ?? input.category,
+      contactName: lead.contactName ?? input.contactName,
+      region: lead.region ?? input.region,
+      rawText: [lead.rawText, input.sourceRef ? `Карточка на картах: ${input.sourceRef}` : ""].filter(Boolean).join("\n"),
+      lastActivityAt: new Date(),
+    },
+  });
+}
+
 export type CreateLeadResult = { id: string; created: true } | { id: string; created: false; duplicate: true };
 
 function isUniqueViolation(e: unknown): boolean {

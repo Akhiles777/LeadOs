@@ -1,12 +1,11 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import type { Prisma } from "@/generated/prisma/client";
 import type { FormState } from "@/lib/actions";
 import { db } from "@/lib/db";
 import { FUNNEL_STAGES, STATUS_LABEL } from "@/lib/leads";
 import { saveProspectingSettings } from "@/lib/settings";
-import { checkWebsite } from "@/lib/site-check";
+import { checkLeadWebsite } from "@/lib/site-check-service";
 import type { LeadStatus } from "@/generated/prisma/enums";
 
 function revalidateCold(leadId?: string) {
@@ -35,9 +34,7 @@ export async function saveProspecting(_prev: FormState, formData: FormData): Pro
 
 /** Проверяет сайт лида и сохраняет результат. Вызывается кнопкой в карточке и после захвата с карт. */
 export async function runSiteCheck(leadId: string) {
-  const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId }, select: { website: true } });
-  const result = await checkWebsite(lead.website);
-  await db.lead.update({ where: { id: leadId }, data: { siteCheck: result as unknown as Prisma.InputJsonObject } });
+  const result = await checkLeadWebsite(leadId);
   revalidateCold(leadId);
   return result;
 }

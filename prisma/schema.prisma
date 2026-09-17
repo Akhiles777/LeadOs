@@ -278,6 +278,8 @@ enum AiJobType {
   SCORE_LEAD
   FOLLOW_UP
   DIGEST
+  SITE_CHECK // проверить сайт компании, найденной автоматически
+  COLD_OFFER // подготовить примерный оффер холодной компании
 }
 
 enum AiJobStatus {

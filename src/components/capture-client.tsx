@@ -204,7 +204,7 @@ export function CaptureClient() {
 
 function CaptureForm({ payload }: { payload: Payload }) {
   const [state, formAction] = useActionState(captureLead, undefined);
-  if (state?.lead) return <Result lead={state.lead} created={!!state.created} opportunity={state.opportunity} />;
+  if (state?.lead) return <Result lead={state.lead} created={!!state.created} enriched={!!state.enriched} opportunity={state.opportunity} />;
 
   return (
     <>
@@ -234,14 +234,15 @@ function Submit() {
   );
 }
 
-function Result({ lead, created, opportunity }: { lead: FoundLead; created: boolean; opportunity?: Opportunity }) {
+function Result({ lead, created, enriched, opportunity }: { lead: FoundLead; created: boolean; enriched?: boolean; opportunity?: Opportunity }) {
   return (
     <>
       <PageHeader
-        title={created ? "Добавлено ✓" : "Уже в LeadOS"}
+        title={created ? "Добавлено ✓" : enriched ? "Дополнено ✓" : "Уже в LeadOS"}
         subtitle={
           <>
             {lead.title}
+            {enriched && " — компания уже была найдена автоматически, дописал телефон и сайт"}
             {lead.matchedBy === "phone" && " — совпал телефон (скорее всего, та же компания с другой карты)"}
           </>
         }

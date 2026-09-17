@@ -9,6 +9,7 @@ import { assessLead } from "@/ai/tasks/assess";
 import { buildDigest, moscowDay } from "@/ai/tasks/digest";
 import { generateDraft } from "@/ai/tasks/drafts";
 import { notifyHotLead } from "@/lib/notify";
+import { checkLeadWebsite } from "@/lib/site-check-service";
 
 export async function runJob(job: AiJob): Promise<void> {
   switch (job.type) {
@@ -21,6 +22,15 @@ export async function runJob(job: AiJob): Promise<void> {
     case "FOLLOW_UP":
       if (!job.leadId) throw new AiResponseError("Нет leadId");
       await generateDraft(job.leadId, "follow_up");
+      return;
+    case "SITE_CHECK":
+      if (!job.leadId) throw new AiResponseError("Нет leadId");
+      await checkLeadWebsite(job.leadId);
+      return;
+    case "COLD_OFFER":
+      if (!job.leadId) throw new AiResponseError("Нет leadId");
+      // Скрипт звонка опирается на проверку сайта, поэтому задача ставится после неё.
+      await generateDraft(job.leadId, "cold_call_script");
       return;
     case "DIGEST":
       await buildDigest();

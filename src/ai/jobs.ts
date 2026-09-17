@@ -16,15 +16,21 @@ export async function enqueue(type: AiJobType, leadId: string | null = null, run
   return db.aiJob.create({ data: { type, leadId, runAfter }, select: { id: true } });
 }
 
+/** Задачи, которым не нужен Claude: их выполняем даже без ключа. */
+const NON_AI_TYPES: AiJobType[] = ["SITE_CHECK"];
+
 /** Забирает одну задачу. SKIP LOCKED — несколько воркеров не возьмут одну и ту же. Зависшие RUNNING возвращаются в работу. */
 export async function claimJob(): Promise<AiJob | null> {
   const staleBefore = new Date(Date.now() - LOCK_TIMEOUT_MS);
+  // Без ключа Claude берём только задачи, которым он не нужен, — иначе они бы падали по кругу.
+  const types: AiJobType[] = isAiConfigured() ? ["SCORE_LEAD", "FOLLOW_UP", "DIGEST", "SITE_CHECK", "COLD_OFFER"] : NON_AI_TYPES;
   const rows = await db.$queryRaw<AiJob[]>`
     UPDATE "AiJob" SET status = 'RUNNING', "lockedAt" = now(), attempts = attempts + 1
     WHERE id = (
       SELECT id FROM "AiJob"
-      WHERE (status = 'PENDING' AND "runAfter" <= now())
-         OR (status = 'RUNNING' AND "lockedAt" < ${staleBefore})
+      WHERE type::text = ANY(${types.map(String)}::text[])
+        AND ((status = 'PENDING' AND "runAfter" <= now())
+          OR (status = 'RUNNING' AND "lockedAt" < ${staleBefore}))
       ORDER BY "runAfter" ASC
       FOR UPDATE SKIP LOCKED
       LIMIT 1

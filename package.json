@@ -21,9 +21,10 @@
     "test:notify": "tsx --tsconfig tsconfig.json scripts/notify-check.ts",
     "test:import": "tsx --tsconfig tsconfig.json scripts/import-check.ts",
     "test:import-db": "tsx --tsconfig tsconfig.json scripts/import-db-check.ts",
-    "test": "pnpm test:time && pnpm test:money && pnpm test:analytics && pnpm test:import && pnpm test:import-db && pnpm test:notify && pnpm test:ai",
+    "test": "pnpm test:time && pnpm test:money && pnpm test:analytics && pnpm test:import && pnpm test:import-db && pnpm test:notify && pnpm test:cold && pnpm test:ai",
     "build:vercel": "prisma migrate deploy && prisma generate && next build",
-    "vercel-build": "prisma migrate deploy && prisma generate && next build"
+    "vercel-build": "prisma migrate deploy && prisma generate && next build",
+    "test:cold": "tsx --tsconfig tsconfig.json scripts/cold-search-check.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.126.0",

@@ -3,12 +3,14 @@ import { connection } from "next/server";
 import { saveProspecting } from "@/lib/cold-actions";
 import { db } from "@/lib/db";
 import { daysSince, formatDate, STATUS_LABEL } from "@/lib/leads";
+import { mapLookupLinks, OSM_ATTRIBUTION } from "@/lib/osm";
 import { getProspectingSettings, mapSearchLinks } from "@/lib/settings";
 import { nicheStats } from "@/lib/report";
 import { loadReportLeads } from "@/lib/report-data";
 import { opportunity, type SiteCheck } from "@/lib/site-check";
 import { ActionForm } from "@/components/action-form";
 import { CallControls, SiteCheckButton } from "@/components/call-controls";
+import { SearchNicheButton } from "@/components/cold-search";
 import { OpportunityView } from "@/components/opportunity";
 import { Card, EmptyState, Field, inputClass, PageHeader, StatusBadge } from "@/components/ui";
 
@@ -84,20 +86,26 @@ export default async function ProspectingPage() {
                       </span>
                     )}
                   </span>
-                  <span className="flex shrink-0 gap-3 text-xs">
-                    <a href={links.yandex} target="_blank" rel="noreferrer" className="underline">
-                      Яндекс ↗
-                    </a>
-                    <a href={links.twoGis} target="_blank" rel="noreferrer" className="underline">
-                      2ГИС ↗
-                    </a>
+                  <span className="flex shrink-0 flex-col items-end gap-1 text-xs">
+                    <SearchNicheButton niche={niche} />
+                    <span className="flex gap-3">
+                      <a href={links.yandex} target="_blank" rel="noreferrer" className="underline">
+                        Яндекс ↗
+                      </a>
+                      <a href={links.twoGis} target="_blank" rel="noreferrer" className="underline">
+                        2ГИС ↗
+                      </a>
+                    </span>
                   </span>
                 </li>
               );
             })}
           </ul>
           <p className="mt-3 text-xs text-zinc-500">
-            Открой карточку компании и нажми закладку.{" "}
+            «Найти автоматически» — компании из OpenStreetMap: сразу с адресом, проверкой сайта и скриптом звонка.
+            Телефон там есть не у всех — у кого нет, добери на картах кнопкой в списке обзвона. {OSM_ATTRIBUTION}.
+            <br />
+            Ссылки «Яндекс» и «2ГИС» — ручной поиск: открой карточку компании и нажми закладку.{" "}
             <Link href="/bookmarklet" className="underline">
               Установить закладку
             </Link>
@@ -145,7 +153,15 @@ export default async function ProspectingPage() {
                           {lead.contactPhone}
                         </a>
                       ) : (
-                        <span className="text-xs text-zinc-500">нет телефона</span>
+                        <span className="flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+                          телефона нет — найти:
+                          <a href={mapLookupLinks(lead.title, null, lead.region).yandex} target="_blank" rel="noreferrer" className="underline">
+                            Яндекс ↗
+                          </a>
+                          <a href={mapLookupLinks(lead.title, null, lead.region).twoGis} target="_blank" rel="noreferrer" className="underline">
+                            2ГИС ↗
+                          </a>
+                        </span>
                       )}
                       {lead.website ? (
                         <a href={lead.website} target="_blank" rel="noreferrer" className="truncate text-xs underline">

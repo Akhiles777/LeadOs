@@ -33,10 +33,7 @@ async function heartbeat() {
 
 async function lane(n: number) {
   while (!stopping) {
-    if (!isAiConfigured()) {
-      await sleep(SCHEDULE_EVERY_MS);
-      continue;
-    }
+
     try {
       const worked = await processNextJob();
       if (!worked) await sleep(IDLE_MS);
@@ -62,7 +59,7 @@ async function scheduler() {
 
 async function main() {
   if (!isAiConfigured()) {
-    console.error("ANTHROPIC_API_KEY не задан — воркер ждёт и ничего не выполняет. См. docs/INSTRUCTIONS.md");
+    console.error("ANTHROPIC_API_KEY не задан: буду выполнять только задачи без Claude (проверка сайтов). См. docs/INSTRUCTIONS.md");
   }
   console.log(`AI-воркер запущен: модель ${AI_MODEL}, параллельно ${CONCURRENCY}`);
   for (const sig of ["SIGINT", "SIGTERM"] as const) {

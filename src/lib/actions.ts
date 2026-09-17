@@ -7,7 +7,7 @@ import { db } from "@/lib/db";
 import { runSiteCheck } from "@/lib/cold-actions";
 import { formToObject, normalizePhone, parseLeadInput } from "@/lib/lead-input";
 import { type Opportunity, opportunity, type SiteCheck } from "@/lib/site-check";
-import { createLeadDeduped, findDuplicate, updateLeadChecked } from "@/lib/lead-service";
+import { createLeadDeduped, enrichCompany, findCompanyToEnrich, findDuplicate, updateLeadChecked } from "@/lib/lead-service";
 import { normalizeSourceRef } from "@/lib/source-ref";
 import { FUNNEL_STAGES, isSource, MANUAL_ACTIVITY_TYPES, STATUS_LABEL, STATUS_ORDER } from "@/lib/leads";
 import type { LeadStatus } from "@/generated/prisma/enums";
@@ -17,7 +17,7 @@ type LeadRef = { id: string; title: string };
 export type FormState = { error?: string; ok?: boolean; duplicate?: LeadRef } | undefined;
 
 export type CaptureState =
-  | { error?: string; lead?: LeadRef & { status: LeadStatus }; created?: boolean; opportunity?: Opportunity }
+  | { error?: string; lead?: LeadRef & { status: LeadStatus }; created?: boolean; enriched?: boolean; opportunity?: Opportunity }
   | undefined;
 
 function stageIndex(status: LeadStatus): number {
@@ -63,6 +63,17 @@ export async function lookupLead(source: string, sourceRef: string, phone?: stri
 export async function captureLead(_prev: CaptureState, formData: FormData): Promise<CaptureState> {
   const parsed = parseLeadInput(formToObject(formData));
   if ("error" in parsed) return { error: parsed.error };
+
+  // Компанию могли найти автоматически без телефона — дополняем её, а не заводим дубль.
+  const toEnrich = await findCompanyToEnrich(parsed.data);
+  if (toEnrich) {
+    await enrichCompany(toEnrich, parsed.data);
+    if (parsed.data.website) await runSiteCheck(toEnrich);
+    const enriched = await db.lead.findUniqueOrThrow({ where: { id: toEnrich }, select: { id: true, title: true, status: true, category: true, siteCheck: true } });
+    revalidateLead(toEnrich);
+    const { siteCheck: check, category: cat, ...ref } = enriched;
+    return { lead: ref, created: false, enriched: true, opportunity: check ? opportunity(check as unknown as SiteCheck, cat) : undefined };
+  }
 
   const result = await createLeadDeduped(parsed.data);
   if (result.created && (parsed.data.source === "COLD_LOCAL" || parsed.data.website)) {
