@@ -1,6 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
-import type { z } from "zod";
+import { toJSONSchema, type z } from "zod";
 import { db } from "@/lib/db";
 
 /**
@@ -8,40 +6,119 @@ import { db } from "@/lib/db";
  * получают проверенный объект и сами решают, что записать в БД. У модели нет доступа к БД и инструментов.
  */
 
-export const AI_MODEL = process.env.AI_MODEL?.trim() || "claude-opus-5";
+export const AI_PROVIDER_NAME = "RouterAI";
+export const ROUTERAI_BASE_URL = (process.env.ROUTERAI_BASE_URL?.trim() || "https://routerai.ru/api/v1").replace(/\/+$/, "");
+export const AI_MODEL = process.env.AI_MODEL?.trim() || "openai/gpt-4o";
 
-// Цены Claude Opus 5, $ за 1M токенов. Если сработала резервная модель, оценка приблизительная.
-const PRICE = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
+// У RouterAI цены зависят от выбранной модели и провайдера. Если задать тарифы в env,
+// журнал покажет приблизительную стоимость в рублях за 1M токенов.
+function aiPrice() {
+  return {
+    input: Number(process.env.AI_PRICE_INPUT_RUB_PER_1M ?? 0),
+    output: Number(process.env.AI_PRICE_OUTPUT_RUB_PER_1M ?? 0),
+  };
+}
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export type AiPurpose = "assess" | "offer" | "call_script" | "follow_up" | "digest" | "tuning";
 
 export class AiNotConfiguredError extends Error {
   constructor() {
-    super("AI не настроен: задай ANTHROPIC_API_KEY (см. docs/INSTRUCTIONS.md)");
+    super("AI не настроен: задай ROUTERAI_API_KEY (см. docs/INSTRUCTIONS.md)");
   }
 }
 
 export class AiResponseError extends Error {}
 
-export function isAiConfigured(): boolean {
-  return Boolean(process.env.ANTHROPIC_API_KEY?.trim() || process.env.ANTHROPIC_AUTH_TOKEN?.trim());
+export class AiApiError extends Error {
+  constructor(
+    message: string,
+    public status?: number,
+  ) {
+    super(message);
+  }
 }
 
-type MessagesApi = Pick<Anthropic["beta"]["messages"], "parse">;
-let override: MessagesApi | null = null;
-let client: Anthropic | null = null;
+export function isAiConfigured(): boolean {
+  return Boolean(process.env.ROUTERAI_API_KEY?.trim());
+}
+
+type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
+type ChatCompletionRequest = {
+  model: string;
+  messages: ChatMessage[];
+  max_tokens: number;
+  temperature: number;
+  verbosity?: Effort;
+  response_format: {
+    type: "json_schema";
+    json_schema: { name: string; strict: boolean; schema: unknown };
+  };
+  provider?: {
+    country?: string;
+    order?: string[];
+    only?: string[];
+    ignore?: string[];
+    allow_fallbacks?: boolean;
+  };
+};
+type ChatCompletionResponse = {
+  model?: string;
+  choices?: { message?: { content?: string | null }; finish_reason?: string | null }[];
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
+};
+type ChatCompletionsApi = { create(params: ChatCompletionRequest): Promise<ChatCompletionResponse> };
+let override: ChatCompletionsApi | null = null;
 
 /** Для тестов: подменить вызов модели. */
-export function setMessagesApiForTests(api: MessagesApi | null) {
+export function setMessagesApiForTests(api: ChatCompletionsApi | null) {
   override = api;
 }
 
-function messagesApi(): MessagesApi {
+function providerRouting(): ChatCompletionRequest["provider"] | undefined {
+  const country = process.env.ROUTERAI_PROVIDER_COUNTRY?.trim();
+  const order = process.env.ROUTERAI_PROVIDER_ORDER?.split(",").map((s) => s.trim()).filter(Boolean);
+  const only = process.env.ROUTERAI_PROVIDER_ONLY?.split(",").map((s) => s.trim()).filter(Boolean);
+  const ignore = process.env.ROUTERAI_PROVIDER_IGNORE?.split(",").map((s) => s.trim()).filter(Boolean);
+  const allowFallbacks = process.env.ROUTERAI_ALLOW_FALLBACKS?.trim();
+  const provider = {
+    ...(country && { country }),
+    ...(order?.length && { order }),
+    ...(only?.length && { only }),
+    ...(ignore?.length && { ignore }),
+    ...(allowFallbacks && { allow_fallbacks: allowFallbacks !== "false" }),
+  };
+  return Object.keys(provider).length ? provider : undefined;
+}
+
+function chatCompletionsApi(): ChatCompletionsApi {
   if (override) return override;
   if (!isAiConfigured()) throw new AiNotConfiguredError();
-  client ??= new Anthropic({ maxRetries: 3, timeout: 5 * 60_000 });
-  return client.beta.messages;
+  return {
+    create: async (params) => {
+      const response = await fetch(`${ROUTERAI_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.ROUTERAI_API_KEY!.trim()}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(params),
+        signal: AbortSignal.timeout(5 * 60_000),
+      });
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        throw new AiApiError(`RouterAI API ${response.status}: ${body || response.statusText}`, response.status);
+      }
+      return (await response.json()) as ChatCompletionResponse;
+    },
+  };
 }
 
 export type StructuredRequest<S extends z.ZodType> = {
@@ -58,8 +135,25 @@ export type StructuredRequest<S extends z.ZodType> = {
   maxTokens?: number;
 };
 
+function schemaName(purpose: AiPurpose): string {
+  return `leados_${purpose}`;
+}
+
+function parseJsonContent(content: string): unknown {
+  try {
+    return JSON.parse(content);
+  } catch {
+    const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(content)?.[1];
+    if (fenced) return JSON.parse(fenced);
+    const start = content.indexOf("{");
+    const end = content.lastIndexOf("}");
+    if (start >= 0 && end > start) return JSON.parse(content.slice(start, end + 1));
+    throw new AiResponseError("Модель вернула не JSON");
+  }
+}
+
 export async function generateStructured<S extends z.ZodType>(req: StructuredRequest<S>): Promise<z.infer<S>> {
-  const api = messagesApi(); // без ключа — ошибка до вызова, в журнал вызовов не пишем
+  const api = chatCompletionsApi(); // без ключа — ошибка до вызова, в журнал вызовов не пишем
   const started = Date.now();
   const log = {
     purpose: req.purpose,
@@ -73,40 +167,49 @@ export async function generateStructured<S extends z.ZodType>(req: StructuredReq
   };
 
   try {
-    const response = await api.parse({
+    const response = await api.create({
       model: AI_MODEL,
-      max_tokens: req.maxTokens ?? 16000,
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-      thinking: { type: "adaptive" },
-      output_config: { effort: req.effort, format: betaZodOutputFormat(req.schema) },
-      system: [
-        { type: "text", text: req.system, cache_control: { type: "ephemeral" } },
-        ...(req.systemExtra ? [{ type: "text" as const, text: req.systemExtra, cache_control: { type: "ephemeral" as const } }] : []),
+      max_tokens: req.maxTokens ?? 6000,
+      temperature: 0.2,
+      verbosity: req.effort,
+      provider: providerRouting(),
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: schemaName(req.purpose), strict: true, schema: toJSONSchema(req.schema, { target: "draft-7" }) },
+      },
+      messages: [
+        {
+          role: "system",
+          content: [
+            req.system,
+            req.systemExtra,
+            "Верни только валидный JSON по заданной JSON Schema. Без Markdown, пояснений и текста вокруг JSON.",
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+        },
+        { role: "user", content: req.prompt },
       ],
-      messages: [{ role: "user", content: req.prompt }],
     });
 
     const u = response.usage;
-    log.model = response.model;
-    log.inputTokens = u.input_tokens;
-    log.outputTokens = u.output_tokens;
-    log.cacheReadTokens = u.cache_read_input_tokens ?? 0;
-    log.cacheCreationTokens = u.cache_creation_input_tokens ?? 0;
-    log.costUsd =
-      (log.inputTokens * PRICE.input + log.outputTokens * PRICE.output + log.cacheReadTokens * PRICE.cacheRead + log.cacheCreationTokens * PRICE.cacheWrite) /
-      1_000_000;
+    log.model = response.model ?? AI_MODEL;
+    log.inputTokens = u?.prompt_tokens ?? u?.input_tokens ?? 0;
+    log.outputTokens = u?.completion_tokens ?? u?.output_tokens ?? 0;
+    log.cacheReadTokens = u?.cache_read_input_tokens ?? 0;
+    log.cacheCreationTokens = u?.cache_creation_input_tokens ?? 0;
+    const price = aiPrice();
+    log.costUsd = (log.inputTokens * price.input + log.outputTokens * price.output) / 1_000_000;
 
-    if (response.stop_reason === "refusal") {
-      throw new AiResponseError(`Модель отказалась отвечать${response.stop_details?.category ? ` (${response.stop_details.category})` : ""}`);
-    }
-    if (response.stop_reason === "max_tokens") throw new AiResponseError("Ответ модели обрезан по длине");
-    if (response.parsed_output == null) throw new AiResponseError("Модель вернула ответ не по схеме");
+    const choice = response.choices?.[0];
+    if (!choice?.message?.content) throw new AiResponseError("Модель вернула пустой ответ");
+    if (choice.finish_reason === "length") throw new AiResponseError("Ответ модели обрезан по длине");
 
+    const parsed = req.schema.parse(parseJsonContent(choice.message.content));
     await db.aiCall.create({ data: { ...log, ok: true, durationMs: Date.now() - started } });
-    return response.parsed_output as z.infer<S>;
+    return parsed as z.infer<S>;
   } catch (e) {
-    const message = e instanceof Anthropic.APIError ? `API ${e.status}: ${e.message}` : e instanceof Error ? e.message : String(e);
+    const message = e instanceof Error ? e.message : String(e);
     await db.aiCall.create({ data: { ...log, ok: false, error: message.slice(0, 2000), durationMs: Date.now() - started } }).catch(() => {});
     throw e;
   }

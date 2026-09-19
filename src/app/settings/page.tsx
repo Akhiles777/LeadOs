@@ -22,7 +22,7 @@ function environmentChecks(): Check[] {
     { label: "Публичный адрес", ok: has("APP_URL"), hint: "APP_URL — ссылки в уведомлениях, API и закладках", required: prod },
     { label: "Токен API", ok: has("API_TOKEN", 16), hint: "API_TOKEN — для Telegram-воркера", required: false },
     { label: "Секрет cron", ok: has("CRON_SECRET", 16), hint: "CRON_SECRET — без него Vercel Cron не сможет запускать ежедневные дела", required: vercel },
-    { label: "Claude API", ok: isAiConfigured(), hint: "ANTHROPIC_API_KEY", required: false },
+    { label: "RouterAI", ok: isAiConfigured(), hint: "ROUTERAI_API_KEY", required: false },
     { label: "Telegram-бот", ok: botConfigured(), hint: "TELEGRAM_BOT_TOKEN", required: false },
     {
       label: "Пулинг подключений к базе",

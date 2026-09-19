@@ -1,9 +1,8 @@
-import Anthropic from "@anthropic-ai/sdk";
 import type { AiJob } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
 import { staleDays } from "@/lib/leads";
 import { hourInZone } from "@/lib/time";
-import { AiNotConfiguredError, AiResponseError } from "@/ai/client";
+import { AiApiError, AiNotConfiguredError, AiResponseError } from "@/ai/client";
 import { claimJob, completeJob, enqueue, failJob } from "@/ai/jobs";
 import { assessLead } from "@/ai/tasks/assess";
 import { buildDigest, moscowDay } from "@/ai/tasks/digest";
@@ -40,7 +39,7 @@ export async function runJob(job: AiJob): Promise<void> {
 
 function isRetryable(e: unknown): boolean {
   if (e instanceof AiNotConfiguredError) return false;
-  if (e instanceof Anthropic.APIError) return e.status === undefined || e.status === 429 || e.status >= 500;
+  if (e instanceof AiApiError) return e.status === undefined || e.status === 408 || e.status === 409 || e.status === 429 || e.status >= 500;
   if (e instanceof AiResponseError) return true; // обрезанный или кривой ответ — попробуем ещё раз
   if (e instanceof Error && /No record was found|Record to update not found/i.test(e.message)) return false; // лид удалили
   return true;

@@ -1,6 +1,6 @@
 import { connection } from "next/server";
 import type { PortfolioCase } from "@/generated/prisma/client";
-import { AI_MODEL, isAiConfigured } from "@/ai/client";
+import { AI_MODEL, AI_PROVIDER_NAME, isAiConfigured } from "@/ai/client";
 import { BRAND_CATEGORIES } from "@/ai/context";
 import { drainIfPending } from "@/ai/inline";
 import { autoScoreEnabled } from "@/ai/jobs";
@@ -77,7 +77,7 @@ export default async function AiPage() {
         <Card title="Состояние">
           <ul className="flex flex-col gap-1.5 text-sm">
             <li>
-              <Dot ok={configured} /> Claude API: {configured ? `подключён · модель ${AI_MODEL}` : "не подключён — нужен ANTHROPIC_API_KEY (docs/INSTRUCTIONS.md)"}
+              <Dot ok={configured} /> {AI_PROVIDER_NAME}: {configured ? `подключён · модель ${AI_MODEL}` : "не подключён — нужен ROUTERAI_API_KEY (docs/INSTRUCTIONS.md)"}
             </li>
             <li>
               <Dot ok={!!workerOnline} /> Фоновый воркер:{" "}
@@ -139,7 +139,7 @@ export default async function AiPage() {
               </tbody>
             </table>
           )}
-          <p className="mt-3 text-xs text-zinc-500">Оценка по ценам Claude Opus 5; точные суммы — в консоли Anthropic.</p>
+          <p className="mt-3 text-xs text-zinc-500">Стоимость считается по тарифам из AI_PRICE_*; точные суммы — в кабинете RouterAI.</p>
         </Card>
 
         <section id="tuning" className="scroll-mt-20 lg:col-span-2">

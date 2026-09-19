@@ -29,8 +29,12 @@ services:
       BASIC_AUTH_PASSWORD: ${BASIC_AUTH_PASSWORD:?задай BASIC_AUTH_PASSWORD}
       API_TOKEN: ${API_TOKEN:?задай API_TOKEN}
       APP_URL: ${APP_URL:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      AI_MODEL: ${AI_MODEL:-claude-opus-5}
+      ROUTERAI_API_KEY: ${ROUTERAI_API_KEY:-}
+      ROUTERAI_BASE_URL: ${ROUTERAI_BASE_URL:-https://routerai.ru/api/v1}
+      ROUTERAI_PROVIDER_COUNTRY: ${ROUTERAI_PROVIDER_COUNTRY:-}
+      ROUTERAI_PROVIDER_ORDER: ${ROUTERAI_PROVIDER_ORDER:-}
+      ROUTERAI_ALLOW_FALLBACKS: ${ROUTERAI_ALLOW_FALLBACKS:-true}
+      AI_MODEL: ${AI_MODEL:-openai/gpt-4o}
       AI_AUTO_SCORE: ${AI_AUTO_SCORE:-true}
       # На VPS AI-задачи выполняет сервис ai-worker, а не веб-процесс
       AI_INLINE_JOBS: "false"
@@ -54,8 +58,12 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://leados:${POSTGRES_PASSWORD}@db:5432/leados
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?задай ANTHROPIC_API_KEY}
-      AI_MODEL: ${AI_MODEL:-claude-opus-5}
+      ROUTERAI_API_KEY: ${ROUTERAI_API_KEY:?задай ROUTERAI_API_KEY}
+      ROUTERAI_BASE_URL: ${ROUTERAI_BASE_URL:-https://routerai.ru/api/v1}
+      ROUTERAI_PROVIDER_COUNTRY: ${ROUTERAI_PROVIDER_COUNTRY:-}
+      ROUTERAI_PROVIDER_ORDER: ${ROUTERAI_PROVIDER_ORDER:-}
+      ROUTERAI_ALLOW_FALLBACKS: ${ROUTERAI_ALLOW_FALLBACKS:-true}
+      AI_MODEL: ${AI_MODEL:-openai/gpt-4o}
       AI_AUTO_SCORE: ${AI_AUTO_SCORE:-true}
       AI_WORKER_CONCURRENCY: ${AI_WORKER_CONCURRENCY:-2}
       DIGEST_HOUR: ${DIGEST_HOUR:-8}

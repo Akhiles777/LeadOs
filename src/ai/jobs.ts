@@ -16,13 +16,13 @@ export async function enqueue(type: AiJobType, leadId: string | null = null, run
   return db.aiJob.create({ data: { type, leadId, runAfter }, select: { id: true } });
 }
 
-/** Задачи, которым не нужен Claude: их выполняем даже без ключа. */
+/** Задачи, которым не нужна модель: их выполняем даже без ключа RouterAI. */
 const NON_AI_TYPES: AiJobType[] = ["SITE_CHECK"];
 
 /** Забирает одну задачу. SKIP LOCKED — несколько воркеров не возьмут одну и ту же. Зависшие RUNNING возвращаются в работу. */
 export async function claimJob(): Promise<AiJob | null> {
   const staleBefore = new Date(Date.now() - LOCK_TIMEOUT_MS);
-  // Без ключа Claude берём только задачи, которым он не нужен, — иначе они бы падали по кругу.
+  // Без ключа RouterAI берём только задачи, которым модель не нужна, — иначе они бы падали по кругу.
   const types: AiJobType[] = isAiConfigured() ? ["SCORE_LEAD", "FOLLOW_UP", "DIGEST", "SITE_CHECK", "COLD_OFFER"] : NON_AI_TYPES;
   const rows = await db.$queryRaw<AiJob[]>`
     UPDATE "AiJob" SET status = 'RUNNING', "lockedAt" = now(), attempts = attempts + 1

@@ -23,7 +23,7 @@ export async function drainIfPending() {
 }
 
 export function drainQueueAfterResponse() {
-  // Без ключа Claude очередь всё равно нужна: проверка сайтов найденных компаний идёт через неё.
+  // Без ключа RouterAI очередь всё равно нужна: проверка сайтов найденных компаний идёт через неё.
   if (!inlineJobsEnabled()) return;
   try {
     after(async () => {

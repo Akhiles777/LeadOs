@@ -59,7 +59,7 @@ async function scheduler() {
 
 async function main() {
   if (!isAiConfigured()) {
-    console.error("ANTHROPIC_API_KEY не задан: буду выполнять только задачи без Claude (проверка сайтов). См. docs/INSTRUCTIONS.md");
+    console.error("ROUTERAI_API_KEY не задан: буду выполнять только задачи без модели (проверка сайтов). См. docs/INSTRUCTIONS.md");
   }
   console.log(`AI-воркер запущен: модель ${AI_MODEL}, параллельно ${CONCURRENCY}`);
   for (const sig of ["SIGINT", "SIGTERM"] as const) {

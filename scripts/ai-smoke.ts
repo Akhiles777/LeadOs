@@ -1,5 +1,5 @@
 /**
- * Проверка AI-слоя без реальных вызовов Claude: pnpm test:ai
+ * Проверка AI-слоя без реальных вызовов RouterAI: pnpm test:ai
  * Модель подменяется фикстурами; работает с настоящей БД из DATABASE_URL и удаляет за собой всё созданное.
  */
 import "dotenv/config";
@@ -14,16 +14,16 @@ import { generateDraft } from "@/ai/tasks/drafts";
 import { applyRuleChange, suggestTuning, TUNING_KEY } from "@/ai/tasks/tuning";
 import { createLeadDeduped } from "@/lib/lead-service";
 
-process.env.ANTHROPIC_API_KEY ||= "test-key-not-used";
+process.env.ROUTERAI_API_KEY ||= "test-key-not-used";
+process.env.AI_MODEL ||= "openai/gpt-4o";
+process.env.AI_PRICE_INPUT_RUB_PER_1M ||= "10";
+process.env.AI_PRICE_OUTPUT_RUB_PER_1M ||= "50";
 const MARK = `AI-SMOKE-${Date.now()}`;
 
 type RequestParams = {
   model: string;
-  fallbacks: unknown;
-  betas: string[];
-  system: { text: string; cache_control: { type: string } }[];
-  messages: { content: string }[];
-  output_config: { format?: unknown };
+  messages: { role: string; content: string }[];
+  response_format?: { type: string; json_schema?: { schema?: unknown } };
 };
 type Captured = { system: string; prompt: string; params: RequestParams };
 type DigestJson = { top: { leadId: string }[] };
@@ -31,14 +31,14 @@ const calls: Captured[] = [];
 let mode: "ok" | "refusal" | "bad" = "ok";
 
 setMessagesApiForTests({
-  // @ts-expect-error — тестовая подмена: возвращаем минимальную форму ParsedBetaMessage
-  parse: async (params: RequestParams) => {
-    const system = params.system.map((b) => b.text).join("\n\n");
-    const prompt = params.messages[0].content as string;
+  // Тестовая подмена: возвращаем минимальную форму Chat Completion.
+  create: async (params: RequestParams) => {
+    const system = params.messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
+    const prompt = params.messages.find((m) => m.role === "user")?.content ?? "";
     calls.push({ system, prompt, params });
-    const usage = { input_tokens: 1200, output_tokens: 300, cache_read_input_tokens: calls.length > 1 ? 2000 : 0, cache_creation_input_tokens: calls.length > 1 ? 0 : 2000 };
-    if (mode === "refusal") return { model: "claude-opus-5", stop_reason: "refusal", stop_details: { category: "cyber" }, usage, parsed_output: null };
-    if (mode === "bad") return { model: "claude-opus-5", stop_reason: "end_turn", usage, parsed_output: null };
+    const usage = { prompt_tokens: 1200, completion_tokens: 300 };
+    if (mode === "refusal") return { model: "openai/gpt-4o", choices: [{ message: { content: "" }, finish_reason: "stop" }], usage };
+    if (mode === "bad") return { model: "openai/gpt-4o", choices: [{ message: { content: "{\"text\":123}" }, finish_reason: "stop" }], usage };
 
     let parsed: unknown;
     if (prompt.includes("Оцени этот лид")) {
@@ -72,7 +72,7 @@ setMessagesApiForTests({
     } else {
       parsed = { text: "Здравствуйте! Сделаю сайт для вашей клиники…", notes: "Угол — онлайн-запись" };
     }
-    return { model: "claude-opus-5", stop_reason: "end_turn", usage, parsed_output: parsed };
+    return { model: "openai/gpt-4o", choices: [{ message: { content: JSON.stringify(parsed) }, finish_reason: "stop" }], usage };
   },
 });
 
@@ -114,16 +114,14 @@ async function main() {
     assert.ok(scored.scoredAt);
     assert.equal(await db.aiJob.count({ where: { leadId: { in: [a.id, b.id] }, status: "DONE" } }), 2);
 
-    // 4. Параметры запроса: модель, резерв, кэш, схема ответа, данные лида вне system
+    // 4. Параметры запроса: модель, structured output, данные лида вне system
     const first = calls[0].params;
-    assert.equal(first.model, "claude-opus-5");
-    assert.equal(first.fallbacks, "default");
-    assert.deepEqual(first.betas, ["server-side-fallback-2026-07-01"]);
-    assert.equal(first.system[0].cache_control.type, "ephemeral");
-    assert.ok(first.output_config.format, "структурированный ответ");
+    assert.equal(first.model, "openai/gpt-4o");
+    assert.equal(first.response_format?.type, "json_schema");
+    assert.ok(first.response_format?.json_schema?.schema, "структурированный ответ");
     assert.ok(!calls[0].system.includes("сайт для стоматологии"), "данные лида не попадают в кэшируемую часть");
     assert.ok(calls[0].system.includes("CRM для клиники"), "кейсы в системном промпте");
-    assert.equal(calls[0].system, calls[1].system, "системный промпт одинаков между вызовами — кэш сработает");
+    assert.equal(calls[0].system, calls[1].system, "системный промпт одинаков между вызовами");
 
     // 5. Черновики: few-shot — сначала сообщения, приведшие к сделке
     const won = await createLeadDeduped({ ...base, title: `${MARK} выигранный`, sourceRef: null });
@@ -141,7 +139,7 @@ async function main() {
 
     // 6. Отказ модели и кривой ответ: задача повторяется, после 3 попыток — FAILED; ошибка логируется
     mode = "refusal";
-    await assert.rejects(assessLead(b.id), /отказалась/);
+    await assert.rejects(assessLead(b.id), /пустой ответ/);
     const job = await enqueue("SCORE_LEAD", b.id);
     for (let i = 0; i < 3; i++) {
       await db.aiJob.update({ where: { id: job.id }, data: { runAfter: new Date(0) } });
@@ -151,12 +149,12 @@ async function main() {
     assert.equal(failed.status, "FAILED");
     assert.equal(failed.attempts, 3);
     mode = "bad";
-    await assert.rejects(generateDraft(b.id, "cold_message"), /не по схеме/);
+    await assert.rejects(generateDraft(b.id, "cold_message"));
     mode = "ok";
 
     // 7. Учёт расходов
     const log = await db.aiCall.findMany({ where: { createdAt: { gte: started } } });
-    assert.ok(log.some((c) => !c.ok && /отказалась/.test(c.error ?? "")));
+    assert.ok(log.some((c) => !c.ok && /пустой ответ/.test(c.error ?? "")));
     const okCall = log.find((c) => c.ok)!;
     assert.ok(okCall.costUsd > 0 && okCall.inputTokens === 1200 && okCall.outputTokens === 300);
 
@@ -181,14 +179,12 @@ async function main() {
       assert.equal(await db.aiJob.count({ where: { leadId: lost.id, type: "FOLLOW_UP", status: "PENDING" } }), 0, "после черновика повторно не ставится");
     }
 
-    // 10. Поправки к оценке попадают в отдельный кэшируемый блок системного промпта
+    // 10. Поправки к оценке попадают в системный промпт
     await db.assessmentFeedback.create({ data: { leadId: a.id, aiScore: 100, aiVerdict: "TAKE", correctVerdict: "SKIP", note: `${MARK} это поддержка 24/7, не разработка` } });
     await assessLead(a.id);
     const withFeedback = calls.at(-1)!.params;
-    assert.equal(withFeedback.system.length, 2, "два блока system");
-    assert.ok(withFeedback.system[1].text.includes("поддержка 24/7"));
-    assert.equal(withFeedback.system[1].cache_control.type, "ephemeral");
-    assert.equal(withFeedback.system[0].text, calls[0].params.system[0].text, "основной блок не изменился — кэш правил сохраняется");
+    assert.ok(withFeedback.messages[0].content.includes("поддержка 24/7"));
+    assert.ok(withFeedback.messages[0].content.includes(calls[0].params.messages[0].content.split("\n\n")[0]), "основные правила сохраняются");
 
     // 11. Донастройка: предложение сохраняется, применение заменяет правила категории один раз
     const rulesBefore = await db.personalBrandRule.findMany();

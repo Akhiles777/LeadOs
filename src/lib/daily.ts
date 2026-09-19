@@ -15,8 +15,8 @@ export async function runDailyTasks(budgetMs: number, now = new Date()): Promise
   let jobs = 0;
   if (aiConfigured) {
     await scheduleDueJobs(now, { forceDigest: true });
-    jobs = await drainQueue(budgetMs);
   }
+  jobs = await drainQueue(budgetMs);
   const notification = await sendDailyNotification(now).catch((e) => `error: ${e instanceof Error ? e.message : e}`);
   return { jobs, notification, aiConfigured };
 }

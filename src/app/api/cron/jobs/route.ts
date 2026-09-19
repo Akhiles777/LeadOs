@@ -11,8 +11,8 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(request: Request) {
   if (!checkCron(request)) return Response.json({ error: "unauthorized" }, { status: 401 });
-  if (!isAiConfigured()) return Response.json({ jobs: 0, aiConfigured: false });
-  await scheduleDueJobs();
+  const aiConfigured = isAiConfigured();
+  if (aiConfigured) await scheduleDueJobs();
   const jobs = await drainQueue(240_000);
-  return Response.json({ jobs, aiConfigured: true });
+  return Response.json({ jobs, aiConfigured });
 }
