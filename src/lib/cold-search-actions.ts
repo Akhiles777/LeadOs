@@ -8,8 +8,8 @@ import { getProspectingSettings } from "@/lib/settings";
 export type SearchState = { result?: SearchResult; error?: string };
 
 /** Автоматический поиск компаний ниши в городе из настроек. */
-/** offers — сколько первых компаний сразу получают подобранный оффер (≈15–20 ₽ за компанию при Claude Opus). */
-export async function runNicheSearch(niche: string, radiusKm: number, limit: number, offers = 10): Promise<SearchState> {
+/** offers — скольким первым компаниям AI сразу пишет тексты (≈1 ₽ за компанию на DeepSeek V4 Pro). */
+export async function runNicheSearch(niche: string, radiusKm: number, limit: number, offers = 0): Promise<SearchState> {
   try {
     const settings = await getProspectingSettings();
     const result = await searchNiche({

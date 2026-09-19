@@ -127,8 +127,9 @@ export async function findContacts(leadId: string): Promise<FindContactsResult> 
     prompt: `Найди телефон, WhatsApp, Telegram, почту, VK/Instagram и официальный сайт компании: ${who}.`,
     schema: foundSchema,
     effort: "low",
-    maxTokens: 3000,
-    webSearch: { maxResults: 6, searchPrompt: `Контакты компании ${who}` },
+    maxTokens: 1500,
+    // 3 результата поиска ≈1,4 ₽ (Exa), 6 — вдвое дороже, а контакты обычно в первых же справочниках.
+    webSearch: { maxResults: 3, searchPrompt: `Контакты компании ${who}` },
   });
 
   const now = new Date();

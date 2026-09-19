@@ -1,6 +1,6 @@
 import type { AiJob, AiJobType } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
-import { isAiConfigured } from "@/ai/client";
+import { aiBlockedReason, isAiConfigured } from "@/ai/client";
 
 const MAX_ATTEMPTS = 3;
 
@@ -18,9 +18,9 @@ export async function deferJob(job: AiJob, delayMs: number) {
   });
 }
 
-/** Поиск контактов через веб-поиск платный (~2–5 ₽) — его можно выключить. */
+/** Автоматический поиск контактов через веб-поиск платный (≈1–2 ₽ за компанию) — включается только явно. */
 export function contactSearchEnabled(): boolean {
-  return isAiConfigured() && process.env.AI_FIND_CONTACTS !== "false";
+  return isAiConfigured() && process.env.AI_FIND_CONTACTS === "true";
 }
 const LOCK_TIMEOUT_MS = 10 * 60_000;
 
@@ -43,7 +43,8 @@ const ALL_TYPES: AiJobType[] = ["SCORE_LEAD", "FOLLOW_UP", "DIGEST", "SITE_CHECK
 export async function claimJob(): Promise<AiJob | null> {
   const staleBefore = new Date(Date.now() - LOCK_TIMEOUT_MS);
   // Без ключа RouterAI берём только задачи, которым модель не нужна, — иначе они бы падали по кругу.
-  const types: AiJobType[] = isAiConfigured() ? ALL_TYPES : NON_AI_TYPES;
+  // Бюджет исчерпан или RouterAI поставил на паузу — бесплатные задачи (проверка сайта) продолжают работать.
+  const types: AiJobType[] = isAiConfigured() && !(await aiBlockedReason()) ? ALL_TYPES : NON_AI_TYPES;
   const rows = await db.$queryRaw<AiJob[]>`
     UPDATE "AiJob" SET status = 'RUNNING', "lockedAt" = now(), attempts = attempts + 1
     WHERE id = (
@@ -80,6 +81,13 @@ export async function failJob(job: AiJob, error: unknown, retryable = true) {
   });
 }
 
+/**
+ * Повтор упавших задач. Платные массовые задачи (оффер, поиск контактов) не повторяются скопом —
+ * иначе одна кнопка может потратить недельный бюджет. Их запускают из карточки компании.
+ */
 export async function retryFailedJobs() {
-  return db.aiJob.updateMany({ where: { status: "FAILED" }, data: { status: "PENDING", attempts: 0, runAfter: new Date(), error: null, finishedAt: null } });
+  return db.aiJob.updateMany({
+    where: { status: "FAILED", type: { notIn: ["COLD_OFFER", "FIND_CONTACTS"] } },
+    data: { status: "PENDING", attempts: 0, runAfter: new Date(), error: null, finishedAt: null },
+  });
 }

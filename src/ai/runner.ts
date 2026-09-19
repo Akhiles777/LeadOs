@@ -2,7 +2,7 @@ import type { AiJob } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
 import { staleDays } from "@/lib/leads";
 import { hourInZone } from "@/lib/time";
-import { AiApiError, AiNotConfiguredError, AiResponseError } from "@/ai/client";
+import { AiApiError, AiBudgetError, AiNotConfiguredError, AiResponseError } from "@/ai/client";
 import { claimJob, completeJob, contactSearchEnabled, DeferJobError, deferJob, enqueue, failJob } from "@/ai/jobs";
 import { findContacts } from "@/ai/tasks/find-contacts";
 import { generatePitch } from "@/ai/tasks/pitch";
@@ -64,7 +64,7 @@ async function searchContactsIfMissing(leadId: string) {
 }
 
 function isRetryable(e: unknown): boolean {
-  if (e instanceof AiNotConfiguredError) return false;
+  if (e instanceof AiNotConfiguredError || e instanceof AiBudgetError) return false;
   if (e instanceof AiApiError) return e.status === undefined || e.status === 408 || e.status === 409 || e.status === 429 || e.status >= 500;
   if (e instanceof AiResponseError) return true; // обрезанный или кривой ответ — попробуем ещё раз
   if (e instanceof Error && /No record was found|Record to update not found/i.test(e.message)) return false; // лид удалили

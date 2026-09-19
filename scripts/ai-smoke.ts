@@ -5,7 +5,7 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { db } from "@/lib/db";
-import { AI_MODEL, setMessagesApiForTests } from "@/ai/client";
+import { AI_MODEL, AI_WRITER_MODEL, AiBudgetError, setMessagesApiForTests } from "@/ai/client";
 import { claimJob, completeJob, enqueue } from "@/ai/jobs";
 import { processNextJob, scheduleDueJobs } from "@/ai/runner";
 import { assessLead } from "@/ai/tasks/assess";
@@ -15,6 +15,9 @@ import { applyRuleChange, suggestTuning, TUNING_KEY } from "@/ai/tasks/tuning";
 import { createLeadDeduped } from "@/lib/lead-service";
 
 process.env.ROUTERAI_API_KEY ||= "test-key-not-used";
+process.env.AI_FIND_CONTACTS = "true"; // по умолчанию выключено — в тесте проверяем цепочку целиком
+process.env.AI_WEEKLY_BUDGET_RUB = "0";
+delete process.env.AI_REASONING_MAX;
 process.env.AI_PRICE_INPUT_RUB_PER_1M ||= "10";
 process.env.AI_PRICE_OUTPUT_RUB_PER_1M ||= "50";
 const MARK = `AI-SMOKE-${Date.now()}`;
@@ -161,7 +164,7 @@ async function main() {
     const first = calls[0].params;
     assert.equal(first.model, AI_MODEL);
     assert.equal(first.temperature, undefined, "температура не задаётся — иначе тексты однотипные");
-    assert.ok(["low", "medium", "high"].includes(first.reasoning?.effort ?? ""), "уровень рассуждений передаётся");
+    assert.equal(first.reasoning?.effort, "low", "рассуждения ограничены потолком AI_REASONING_MAX (по умолчанию low) — они оплачиваются");
     assert.equal(first.response_format?.type, "json_schema");
     assert.ok(first.response_format?.json_schema?.schema, "структурированный ответ");
     assert.ok(!calls[0].system.includes("сайт для стоматологии"), "данные лида не попадают в кэшируемую часть");
@@ -273,6 +276,21 @@ async function main() {
     const pitchPrompt = calls.filter((c) => c.prompt.includes("Подбери, что предложить")).at(-1)!.prompt;
     assert.ok(pitchPrompt.includes("<solutions>") && pitchPrompt.includes("e_menu"), "каталог решений в промпте");
     assert.ok(pitchPrompt.includes("Каналы связи: Телефон"), "AI знает, какие есть каналы");
+    const pitchCall = calls.filter((c) => c.prompt.includes("Подбери, что предложить")).at(-1)!;
+    assert.equal(pitchCall.params.model, AI_WRITER_MODEL, "тексты пишет модель для текстов");
+    assert.equal(contactsCall!.params.model, AI_MODEL, "поиск контактов — дешёвой моделью");
+
+    // 13. Недельный бюджет: сверх него вызовов нет, платные задачи не берутся, проверка сайта работает
+    process.env.AI_WEEKLY_BUDGET_RUB = "0.001";
+    const before = calls.length;
+    await assert.rejects(assessLead(a.id), AiBudgetError);
+    assert.equal(calls.length, before, "модель не вызывалась");
+    await enqueue("SCORE_LEAD", b.id, new Date(0));
+    await enqueue("SITE_CHECK", b.id, new Date(0));
+    const claimed = await claimJob();
+    assert.equal(claimed?.type, "SITE_CHECK", "при исчерпанном бюджете очередь берёт только бесплатные задачи");
+    await completeJob(claimed!.id);
+    process.env.AI_WEEKLY_BUDGET_RUB = "0";
 
     console.log(`ok — ${calls.length} подменённых вызовов модели, все проверки пройдены`);
   } finally {

@@ -5,7 +5,7 @@ import { db } from "@/lib/db";
 import { daysSince, formatDate, STATUS_LABEL } from "@/lib/leads";
 import { mapLookupLinks, OSM_ATTRIBUTION } from "@/lib/osm";
 import { allContacts, hasReachableContact } from "@/lib/contacts";
-import { readPitch } from "@/ai/tasks/pitch";
+import { quickPitch, readPitch } from "@/ai/tasks/pitch";
 import { ContactLinks } from "@/components/contact-links";
 import { getProspectingSettings, mapSearchLinks } from "@/lib/settings";
 import { nicheStats } from "@/lib/report";
@@ -57,7 +57,7 @@ export default async function ProspectingPage() {
       lead,
       opp: opportunity(lead.siteCheck as unknown as SiteCheck | null, lead.category),
       reachable: hasReachableContact(allContacts(lead)),
-      pitch: readPitch(lead.pitch),
+      pitch: readPitch(lead.pitch) ?? quickPitch(lead),
     }))
     .sort((a, b) => {
       const dueA = a.lead.followUpAt && a.lead.followUpAt <= now ? 0 : 1;
@@ -178,7 +178,7 @@ export default async function ProspectingPage() {
                       <p className="text-sm">
                         <span className="text-zinc-500">Предложить:</span> <b>{pitch.solutionTitle}</b> · {pitch.price}{" "}
                         <Link href={`/leads/${lead.id}`} className="text-xs underline">
-                          тексты →
+                          {pitch.model === "каталог" ? "написать тексты →" : "тексты →"}
                         </Link>
                       </p>
                     )}

@@ -195,7 +195,7 @@ export function PitchButton({ leadId, again }: { leadId: string; again: boolean 
   return (
     <div className="flex flex-col items-start gap-1">
       <button type="button" disabled={pending} onClick={() => run(() => generatePitchNow(leadId))} className={again ? ghostButtonClass : buttonClass}>
-        {pending ? "Подбираю и пишу… (1–2 минуты)" : again ? "Подобрать заново" : "Подобрать оффер и написать тексты"}
+        {pending ? "Пишу… (до минуты)" : again ? "Переписать тексты (≈1 ₽)" : "Написать тексты с AI (≈1 ₽)"}
       </button>
       {error && <p className="text-xs text-rose-600">{error}</p>}
     </div>
@@ -223,7 +223,7 @@ export function FindContactsButton({ leadId, searchedAt }: { leadId: string; sea
           })
         }
       >
-        {pending ? "Ищу в интернете… (до минуты)" : searchedAt ? "Поискать контакты ещё раз" : "Найти контакты в интернете"}
+        {pending ? "Ищу в интернете… (до минуты)" : searchedAt ? "Поискать контакты ещё раз (≈1,5 ₽)" : "Найти контакты в интернете (≈1,5 ₽)"}
       </button>
       {searchedAt && !message && <p className="text-xs text-zinc-500">Искал {searchedAt}</p>}
       {message && <p className="text-xs text-emerald-700 dark:text-emerald-400">{message}</p>}

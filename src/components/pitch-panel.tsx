@@ -3,15 +3,16 @@ import { PitchButton } from "@/components/ai-panels";
 
 const CONFIDENCE = { high: "уверенно", medium: "скорее да", low: "данных мало — начни с вопросов" } as const;
 
-/** Что предложить компании: решение, почему именно им, цена, срок и бесплатный первый шаг. */
-export function PitchPanel({ leadId, pitch, aiReady }: { leadId: string; pitch: Pitch | null; aiReady: boolean }) {
+/**
+ * Что предложить компании: решение, почему именно им, цена, срок и бесплатный первый шаг.
+ * aiPitch — подобранное AI вместе с текстами; catalogPitch — бесплатный подбор по каталогу, пока AI не звали.
+ */
+export function PitchPanel({ leadId, aiPitch, catalogPitch, aiReady }: { leadId: string; aiPitch: Pitch | null; catalogPitch: Pitch | null; aiReady: boolean }) {
+  const pitch = aiPitch ?? catalogPitch;
   if (!pitch) {
     return (
       <div className="flex flex-col gap-2">
-        <p className="text-sm text-zinc-500">
-          AI посмотрит нишу, сайт и карточку компании, выберет, что им продать (меню, запись в WhatsApp, CRM…), и напишет скрипт звонка,
-          сообщение в WhatsApp и письмо.
-        </p>
+        <p className="text-sm text-zinc-500">Для этой ниши в каталоге нет готового решения — AI подберёт по данным компании и напишет тексты.</p>
         {aiReady ? <PitchButton leadId={leadId} again={false} /> : <p className="text-xs text-zinc-500">Нужен ключ ROUTERAI_API_KEY — см. раздел «AI».</p>}
       </div>
     );
@@ -54,8 +55,14 @@ export function PitchPanel({ leadId, pitch, aiReady }: { leadId: string; pitch: 
           </ul>
         </div>
       )}
-      <p className="text-xs text-zinc-500">Тексты — в «Черновиках сообщений» ниже. Правь и отправляй сам.</p>
-      {aiReady && <PitchButton leadId={leadId} again />}
+      {aiPitch ? (
+        <p className="text-xs text-zinc-500">Тексты — в «Черновиках сообщений» ниже. Правь и отправляй сам.</p>
+      ) : (
+        <p className="text-xs text-zinc-500">
+          Подобрано по каталогу, бесплатно. AI уточнит решение по сайту компании и напишет скрипт звонка, сообщение в WhatsApp и письмо.
+        </p>
+      )}
+      {aiReady && <PitchButton leadId={leadId} again={Boolean(aiPitch)} />}
     </div>
   );
 }

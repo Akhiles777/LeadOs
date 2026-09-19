@@ -9,7 +9,9 @@ export function SearchNicheButton({ niche, defaultRadius = 10, defaultLimit = 20
   const [open, setOpen] = useState(false);
   const [radius, setRadius] = useState(defaultRadius);
   const [limit, setLimit] = useState(defaultLimit);
-  const [offers, setOffers] = useState(10);
+  // Тексты по умолчанию не пишутся: решение «что предложить» и так подбирается бесплатно по каталогу,
+  // а тексты дешевле заказывать из карточки для тех, кому действительно будешь писать.
+  const [offers, setOffers] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
@@ -26,8 +28,8 @@ export function SearchNicheButton({ niche, defaultRadius = 10, defaultLimit = 20
           r.created === 0
             ? `Новых компаний не нашлось: всё уже в базе (${r.duplicates} совпадений)`
             : `Добавлено ${r.created}: сразу с контактами ${r.reachable}, с сайтом ${r.withSite}. Пропущено дублей: ${r.duplicates}` + (r.chains ? `, федеральных сетей: ${r.chains}` : "") + ". " +
-                `Дальше само: проверю сайты и достану с них контакты, остальным поищу контакты в интернете` +
-                (r.offersQueued ? `, для ${r.offersQueued} подберу оффер и напишу тексты.` : "."),
+                `Дальше само и бесплатно: проверю сайты и достану с них контакты, подберу по каталогу, что предложить` +
+                (r.offersQueued ? `; для ${r.offersQueued} AI напишет тексты.` : ". Тексты — кнопкой в карточке компании."),
         );
         setOpen(false);
       }
@@ -47,8 +49,8 @@ export function SearchNicheButton({ niche, defaultRadius = 10, defaultLimit = 20
             <input type="number" min={1} max={60} value={limit} onChange={(e) => setLimit(Number(e.target.value))} className={`${inputClass} w-16 px-1! py-0.5! text-xs!`} />
             шт.
           </label>
-          <label className="flex items-center gap-1 text-xs text-zinc-500" title="Сколько первых компаний сразу получат подобранное решение, скрипт звонка, WhatsApp и письмо (≈15–20 ₽ за компанию)">
-            офферы
+          <label className="flex items-center gap-1 text-xs text-zinc-500" title="Скольким первым компаниям AI сразу напишет скрипт звонка, WhatsApp и письмо (≈1 ₽ за компанию). 0 — только по кнопке в карточке">
+            тексты AI
             <input type="number" min={0} max={60} value={offers} onChange={(e) => setOffers(Number(e.target.value))} className={`${inputClass} w-14 px-1! py-0.5! text-xs!`} />
           </label>
           <button type="button" disabled={pending} className={`${ghostButtonClass} px-2! py-1! text-xs!`} onClick={run}>

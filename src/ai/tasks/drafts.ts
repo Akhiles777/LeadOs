@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Lead } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
-import { AI_MODEL, generateStructured } from "@/ai/client";
+import { AI_WRITER_MODEL, generateStructured } from "@/ai/client";
 import { leadContext, loadBrandContext, loadFewShot } from "@/ai/context";
 import { systemPrompt } from "@/ai/prompts";
 import { solutionsBlock, solutionsFor } from "@/ai/solutions";
@@ -112,14 +112,14 @@ export async function generateDraft(leadId: string, channel: DraftChannel): Prom
 Выбери одно решение из <solutions> под то, чего им не хватает, и строй разговор вокруг него. Если в кейсах есть проект для этой или близкой ниши —
 «у меня уже есть похожая система, вот что она даёт». Опирайся на пробелы из проверки сайта и детали из <site>. Речь разговорная, фразы короткие.${feedback}`,
           schema: callScriptSchema,
-          effort: "high",
+          effort: "medium",
         }),
       renderCallScript,
       { allowIntro: true },
     );
     const text = renderCallScript(script);
     const draft = await db.offerDraft.create({
-      data: { leadId, channel, text, aiText: text, notes: script.relevantCase ? `Кейс: ${script.relevantCase}` : "Подходящего кейса нет", model: AI_MODEL },
+      data: { leadId, channel, text, aiText: text, notes: script.relevantCase ? `Кейс: ${script.relevantCase}` : "Подходящего кейса нет", model: AI_WRITER_MODEL },
     });
     return { draftId: draft.id, channel };
   }
@@ -133,12 +133,12 @@ export async function generateDraft(leadId: string, channel: DraftChannel): Prom
         system: systemPrompt(brand),
         prompt: `${leadContext(lead)}${sentBefore}\n\n${solutions}\n\n${fewShot}\n\n${TASKS[channel]}${feedback}`,
         schema: messageSchema,
-        effort: "high",
+        effort: "medium",
       }),
     (r) => r.text,
   );
   const draft = await db.offerDraft.create({
-    data: { leadId, channel, text: result.text.trim(), aiText: result.text.trim(), notes: result.notes.trim(), model: AI_MODEL },
+    data: { leadId, channel, text: result.text.trim(), aiText: result.text.trim(), notes: result.notes.trim(), model: AI_WRITER_MODEL },
   });
   return { draftId: draft.id, channel };
 }

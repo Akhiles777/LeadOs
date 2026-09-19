@@ -8,10 +8,64 @@ import { db } from "@/lib/db";
 
 export const AI_PROVIDER_NAME = "RouterAI";
 export const ROUTERAI_BASE_URL = (process.env.ROUTERAI_BASE_URL?.trim() || "https://routerai.ru/api/v1").replace(/\/+$/, "");
-// Claude Opus 5 пишет по-русски заметно живее и точнее gpt-4o; через RouterAI доступна со structured outputs.
-export const AI_MODEL = process.env.AI_MODEL?.trim() || "anthropic/claude-opus-5";
-// Модель для веб-поиска контактов: нужна поддержка плагина web. По умолчанию — та же.
+// Модели выбраны по цене: DeepSeek V4 Flash ≈5/10 ₽ за 1M токенов (вход/выход) — для оценки, поиска контактов, дайджеста;
+// V4 Pro ≈65/129 ₽ — для текстов клиентам (пишет заметно лучше, но всё равно в ~16 раз дешевле Claude Opus).
+export const AI_MODEL = process.env.AI_MODEL?.trim() || "deepseek/deepseek-v4-flash";
+export const AI_WRITER_MODEL = process.env.AI_WRITER_MODEL?.trim() || "deepseek/deepseek-v4-pro";
+// Модель для веб-поиска контактов: нужна поддержка плагина web.
 export const AI_SEARCH_MODEL = process.env.AI_SEARCH_MODEL?.trim() || AI_MODEL;
+
+/** Задачи, где качество текста важнее цены: их пишет AI_WRITER_MODEL. */
+const WRITER_PURPOSES = new Set<AiPurpose>(["offer", "pitch", "call_script", "follow_up"]);
+
+export function modelFor(purpose: AiPurpose, webSearch = false): string {
+  if (webSearch) return AI_SEARCH_MODEL;
+  return WRITER_PURPOSES.has(purpose) ? AI_WRITER_MODEL : AI_MODEL;
+}
+
+/**
+ * Недельный бюджет на AI в рублях. Сверх него вызовы не делаются вовсе. Не задан — 80 ₽ (чуть ниже типичного
+ * лимита ключа RouterAI 100 ₽/нед.), «0» — без ограничения.
+ */
+export function weeklyBudgetRub(): number {
+  const raw = process.env.AI_WEEKLY_BUDGET_RUB?.trim();
+  return raw ? Math.max(0, Number(raw) || 0) : 80;
+}
+
+export class AiBudgetError extends Error {}
+
+const PAUSE_KEY = "ai_paused_until";
+
+/** Потрачено за 7 дней по журналу вызовов (₽, примерно). */
+export async function weeklySpendRub(): Promise<number> {
+  const agg = await db.aiCall.aggregate({ where: { createdAt: { gte: new Date(Date.now() - 7 * 86_400_000) } }, _sum: { costUsd: true } });
+  return agg._sum.costUsd ?? 0;
+}
+
+/** Почему AI сейчас нельзя вызывать: пауза после «лимит ключа исчерпан» или свой недельный бюджет. null — можно. */
+export async function aiBlockedReason(): Promise<string | null> {
+  const pause = await db.appSetting.findUnique({ where: { key: PAUSE_KEY } });
+  const until = pause ? new Date(String(pause.value)) : null;
+  if (until && until > new Date()) {
+    return `AI на паузе до ${until.toLocaleString("ru-RU", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })}: RouterAI сообщил, что лимит расходов ключа исчерпан`;
+  }
+  const budget = weeklyBudgetRub();
+  if (budget) {
+    const spent = await weeklySpendRub();
+    if (spent >= budget) return `Недельный бюджет на AI исчерпан: потрачено ≈${spent.toFixed(0)} ₽ из ${budget} ₽ (AI_WEEKLY_BUDGET_RUB)`;
+  }
+  return null;
+}
+
+/** RouterAI ответил «лимит расходов ключа превышен» — не долбим его: пауза на 12 часов. */
+async function pauseAi(hours = 12) {
+  const value = new Date(Date.now() + hours * 3_600_000).toISOString();
+  await db.appSetting.upsert({ where: { key: PAUSE_KEY }, create: { key: PAUSE_KEY, value }, update: { value } }).catch(() => {});
+}
+
+export async function resumeAi() {
+  await db.appSetting.deleteMany({ where: { key: PAUSE_KEY } });
+}
 
 type Price = { input: number; output: number }; // ₽ за 1 токен
 
@@ -142,6 +196,10 @@ function chatCompletionsApi(): ChatCompletionsApi {
       });
       if (!response.ok) {
         const body = await response.text().catch(() => "");
+        if ((response.status === 429 || response.status === 402) && /limit|лимит|баланс|balance|insufficient/i.test(body)) {
+          await pauseAi();
+          throw new AiBudgetError(`RouterAI: лимит расходов исчерпан — AI на паузе 12 часов. ${body.slice(0, 200)}`);
+        }
         throw new AiApiError(`RouterAI API ${response.status}: ${body || response.statusText}`, response.status);
       }
       return (await response.json()) as ChatCompletionResponse;
@@ -167,9 +225,17 @@ export type StructuredRequest<S extends z.ZodType> = {
 
 export type WebCitation = { url: string; title?: string; content?: string };
 
-/** Уровень рассуждений: у RouterAI (как у OpenRouter) — low/medium/high. */
+const EFFORT_ORDER = ["low", "medium", "high"] as const;
+
+/**
+ * Уровень рассуждений (low/medium/high у RouterAI). Рассуждения оплачиваются как выходные токены, поэтому
+ * потолок задаётся AI_REASONING_MAX (по умолчанию low): задача не может рассуждать дольше него.
+ */
 function reasoningEffort(effort: Effort): "low" | "medium" | "high" {
-  return effort === "low" ? "low" : effort === "medium" ? "medium" : "high";
+  const wanted = effort === "low" ? 0 : effort === "medium" ? 1 : 2;
+  const capName = process.env.AI_REASONING_MAX?.trim() as (typeof EFFORT_ORDER)[number] | undefined;
+  const cap = capName && EFFORT_ORDER.includes(capName) ? EFFORT_ORDER.indexOf(capName) : 0;
+  return EFFORT_ORDER[Math.min(wanted, cap)];
 }
 
 function schemaName(purpose: AiPurpose): string {
@@ -198,8 +264,10 @@ export async function generateStructuredWithSources<S extends z.ZodType>(
   req: StructuredRequest<S>,
 ): Promise<{ data: z.infer<S>; citations: WebCitation[] }> {
   const api = chatCompletionsApi(); // без ключа — ошибка до вызова, в журнал вызовов не пишем
+  const blocked = await aiBlockedReason();
+  if (blocked) throw new AiBudgetError(blocked);
   const started = Date.now();
-  const model = req.webSearch ? AI_SEARCH_MODEL : AI_MODEL;
+  const model = modelFor(req.purpose, Boolean(req.webSearch));
   const log = {
     purpose: req.purpose,
     model,

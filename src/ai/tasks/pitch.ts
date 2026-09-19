@@ -6,13 +6,13 @@
 import { z } from "zod";
 import type { Prisma } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
-import { AI_MODEL, generateStructured } from "@/ai/client";
+import { AI_WRITER_MODEL, generateStructured } from "@/ai/client";
 import { leadContext, loadBrandContext, loadFewShot } from "@/ai/context";
 import { systemPrompt } from "@/ai/prompts";
 import { findSolution, solutionsBlock, solutionsFor } from "@/ai/solutions";
 import { callScriptSchema, renderCallScript, withoutCliches } from "@/ai/tasks/drafts";
 import { allContacts, hasReachableContact } from "@/lib/contacts";
-import type { SiteCheck } from "@/lib/site-check";
+import { opportunity, type SiteCheck } from "@/lib/site-check";
 
 export const pitchSchema = z.object({
   solutionId: z.string().describe("id главного решения из <solutions>"),
@@ -38,6 +38,30 @@ export const pitchSchema = z.object({
 
 export type Pitch = Omit<z.infer<typeof pitchSchema>, "callScript" | "whatsapp" | "email"> & { createdAt: string; model: string };
 
+/**
+ * Что предложить — по каталогу, без AI и бесплатно: лучшее решение под нишу и пробелы из проверки сайта.
+ * Показывается у каждой компании сразу; AI нужен только, чтобы написать тексты.
+ */
+export function quickPitch(lead: { category: string | null; title: string; rawText: string; siteCheck: unknown }): Pitch | null {
+  const check = lead.siteCheck as SiteCheck | null;
+  const [best, ...rest] = solutionsFor(`${lead.category ?? ""} ${lead.title} ${lead.rawText.slice(0, 2000)}`, check, 3);
+  if (!best) return null;
+  const reasons = opportunity(check, lead.category).reasons.slice(0, 3);
+  return {
+    solutionId: best.id,
+    solutionTitle: best.title,
+    whyThem: reasons,
+    pitch: best.outcome,
+    price: best.price,
+    timeline: best.days,
+    firstStep: best.firstStep,
+    alternatives: rest.slice(0, 2).map((s) => ({ solutionId: s.id, title: s.title, why: s.pains[0] ?? "" })),
+    confidence: best.signal ? "medium" : "low",
+    createdAt: new Date().toISOString(),
+    model: "каталог",
+  };
+}
+
 const TASK = `Подбери, что предложить этой компании, и подготовь всё для первого контакта.
 
 1. Выбери ОДНО главное решение из <solutions>. Приоритет — решения с «ЕСТЬ СИГНАЛ» и то, что видно по данным
@@ -57,8 +81,9 @@ export async function generatePitch(leadId: string): Promise<Pitch> {
     loadBrandContext(),
   ]);
   const check = lead.siteCheck as unknown as SiteCheck | null;
-  const candidates = solutionsFor(`${lead.category ?? ""} ${lead.title} ${lead.rawText.slice(0, 2000)}`, check, 6);
-  const fewShot = await loadFewShot(["cold_message", "cold_call_script"], leadId, 2);
+  // Экономия токенов: 3 кандидата вместо 6 и один пример стиля — на качество выбора почти не влияет.
+  const candidates = solutionsFor(`${lead.category ?? ""} ${lead.title} ${lead.rawText.slice(0, 2000)}`, check, 3);
+  const fewShot = await loadFewShot(["cold_message"], leadId, 1);
 
   const result = await withoutCliches(
     (feedback) =>
@@ -68,8 +93,8 @@ export async function generatePitch(leadId: string): Promise<Pitch> {
         system: systemPrompt(brand),
         prompt: `${leadContext(lead)}\n\n${solutionsBlock(candidates)}\n\n${fewShot}\n\n${TASK}${feedback}`,
         schema: pitchSchema,
-        effort: "high",
-        maxTokens: 12_000,
+        effort: "medium",
+        maxTokens: 5000,
       }),
     (r) => [r.whatsapp, r.email.subject, r.email.body, r.callScript.hook, r.callScript.followUpMessage].join("\n"),
     { allowIntro: true },
@@ -88,7 +113,7 @@ export async function generatePitch(leadId: string): Promise<Pitch> {
     alternatives: result.alternatives.slice(0, 2),
     confidence: result.confidence,
     createdAt: new Date().toISOString(),
-    model: AI_MODEL,
+    model: AI_WRITER_MODEL,
   };
 
   const note = `Решение: ${pitch.solutionTitle} · ${pitch.price} · ${pitch.timeline}`;
@@ -99,11 +124,11 @@ export async function generatePitch(leadId: string): Promise<Pitch> {
 
   await db.$transaction([
     db.lead.update({ where: { id: leadId }, data: { pitch: pitch as unknown as Prisma.InputJsonObject } }),
-    db.offerDraft.create({ data: { leadId, channel: "cold_call_script", text: script, aiText: script, notes: note, model: AI_MODEL } }),
-    db.offerDraft.create({ data: { leadId, channel: "cold_message", text: result.whatsapp.trim(), aiText: result.whatsapp.trim(), notes: note, model: AI_MODEL } }),
+    db.offerDraft.create({ data: { leadId, channel: "cold_call_script", text: script, aiText: script, notes: note, model: AI_WRITER_MODEL } }),
+    db.offerDraft.create({ data: { leadId, channel: "cold_message", text: result.whatsapp.trim(), aiText: result.whatsapp.trim(), notes: note, model: AI_WRITER_MODEL } }),
     // Письмо сохраняем, только если есть куда его отправить или контактов нет вовсе (вдруг почта найдётся позже).
     ...(hasEmail || !hasReachableContact(contacts)
-      ? [db.offerDraft.create({ data: { leadId, channel: "cold_email", text: email, aiText: email, notes: note, model: AI_MODEL } })]
+      ? [db.offerDraft.create({ data: { leadId, channel: "cold_email", text: email, aiText: email, notes: note, model: AI_WRITER_MODEL } })]
       : []),
   ]);
   return pitch;

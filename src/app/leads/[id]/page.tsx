@@ -12,7 +12,7 @@ import {
 import type { SiteCheck } from "@/lib/site-check";
 import { isAiConfigured } from "@/ai/client";
 import { channelsFor, DRAFT_CHANNELS, type DraftChannel } from "@/ai/tasks/drafts";
-import { readPitch } from "@/ai/tasks/pitch";
+import { quickPitch, readPitch } from "@/ai/tasks/pitch";
 import { AiAssessment } from "@/components/ai-assessment";
 import { DraftEditor, FindContactsButton, GenerateButtons, type SendTargets } from "@/components/ai-panels";
 import { ContactLinks, ContactList } from "@/components/contact-links";
@@ -104,7 +104,7 @@ export default async function LeadPage(props: PageProps<"/leads/[id]">) {
 
           {offerOwn && lead.status !== "WON" && (
             <Card title="Что предложить">
-              <PitchPanel leadId={lead.id} pitch={readPitch(lead.pitch)} aiReady={aiReady} />
+              <PitchPanel leadId={lead.id} aiPitch={readPitch(lead.pitch)} catalogPitch={quickPitch(lead)} aiReady={aiReady} />
             </Card>
           )}
 

@@ -121,8 +121,8 @@ function siteBlock(check: SiteCheck | null): string {
   const parts = [
     check.title ? `Заголовок: ${check.title}` : "",
     check.description ? `Описание: ${check.description}` : "",
-    check.headings?.length ? `Разделы и заголовки: ${check.headings.join(" | ")}` : "",
-    check.excerpt ? `Начало текста главной: ${check.excerpt.slice(0, 1200)}` : "",
+    check.headings?.length ? `Разделы и заголовки: ${check.headings.slice(0, 8).join(" | ")}` : "",
+    check.excerpt ? `Начало текста главной: ${check.excerpt.slice(0, 700)}` : "",
   ].filter(Boolean);
   return parts.length ? ["", "<site>", ...parts, "</site>"].join("\n") : "";
 }
