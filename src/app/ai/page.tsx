@@ -4,7 +4,7 @@ import { AI_MODEL, AI_PROVIDER_NAME, AI_WRITER_MODEL, aiBlockedReason, isAiConfi
 import { BRAND_CATEGORIES } from "@/ai/context";
 import { drainIfPending } from "@/ai/inline";
 import { autoScoreEnabled } from "@/ai/jobs";
-import { saveBrandRules, savePortfolioCase } from "@/lib/ai-actions";
+import { resetAiBudget, saveBrandRules, savePortfolioCase } from "@/lib/ai-actions";
 import { db } from "@/lib/db";
 import { formatDate } from "@/lib/leads";
 import { ActionForm } from "@/components/action-form";
@@ -91,6 +91,13 @@ export default async function AiPage() {
               <Dot ok={!blocked} /> За 7 дней ≈{weekSpent.toFixed(1)} ₽{budget ? ` из ${budget} ₽ бюджета` : " (бюджет не задан — AI_WEEKLY_BUDGET_RUB)"}
             </li>
             {blocked && <li className="text-amber-700 dark:text-amber-400">{blocked}. Проверка сайтов и контакты с сайтов работают и без AI.</li>}
+            <li>
+              <form action={resetAiBudget}>
+                <button type="submit" className="text-xs underline">
+                  {blocked ? "Снять ограничение и считать траты заново с этого момента" : "Считать траты заново с этого момента"}
+                </button>
+              </form>
+            </li>
             <li>
               <Dot ok={!!workerOnline} /> Фоновый воркер:{" "}
               {heartbeat ? `${workerOnline ? "на связи" : "молчит"}, последний раз ${formatDate(heartbeat.seenAt, true)}` : "ещё не запускался (pnpm worker:ai)"}

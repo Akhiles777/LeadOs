@@ -35,10 +35,15 @@ export function weeklyBudgetRub(): number {
 export class AiBudgetError extends Error {}
 
 const PAUSE_KEY = "ai_paused_until";
+const RESET_KEY = "ai_budget_reset_at";
 
-/** Потрачено за 7 дней по журналу вызовов (₽, примерно). */
+/** Потрачено за 7 дней по журналу вызовов (₽, примерно) — но не раньше ручного сброса счётчика. */
 export async function weeklySpendRub(): Promise<number> {
-  const agg = await db.aiCall.aggregate({ where: { createdAt: { gte: new Date(Date.now() - 7 * 86_400_000) } }, _sum: { costUsd: true } });
+  const reset = await db.appSetting.findUnique({ where: { key: RESET_KEY } });
+  const weekAgo = new Date(Date.now() - 7 * 86_400_000);
+  const resetAt = reset ? new Date(String(reset.value)) : null;
+  const since = resetAt && resetAt > weekAgo ? resetAt : weekAgo;
+  const agg = await db.aiCall.aggregate({ where: { createdAt: { gte: since } }, _sum: { costUsd: true } });
   return agg._sum.costUsd ?? 0;
 }
 
@@ -63,8 +68,13 @@ async function pauseAi(hours = 12) {
   await db.appSetting.upsert({ where: { key: PAUSE_KEY }, create: { key: PAUSE_KEY, value }, update: { value } }).catch(() => {});
 }
 
+/** Разово снять ограничения: убрать паузу и начать считать недельные траты с этого момента. */
 export async function resumeAi() {
-  await db.appSetting.deleteMany({ where: { key: PAUSE_KEY } });
+  const value = new Date().toISOString();
+  await db.$transaction([
+    db.appSetting.deleteMany({ where: { key: PAUSE_KEY } }),
+    db.appSetting.upsert({ where: { key: RESET_KEY }, create: { key: RESET_KEY, value }, update: { value } }),
+  ]);
 }
 
 type Price = { input: number; output: number }; // ₽ за 1 токен

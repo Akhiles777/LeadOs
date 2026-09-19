@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { isAiConfigured } from "@/ai/client";
+import { isAiConfigured, resumeAi } from "@/ai/client";
 import { BRAND_CATEGORIES } from "@/ai/context";
 import { enqueue, retryFailedJobs } from "@/ai/jobs";
 import { assessLead } from "@/ai/tasks/assess";
@@ -135,6 +135,12 @@ export async function setCaseActive(id: string, active: boolean) {
 
 export async function deletePortfolioCase(id: string) {
   await db.portfolioCase.delete({ where: { id } });
+  revalidatePath("/ai");
+}
+
+/** Разовый сброс: снять паузу и считать недельный бюджет заново с текущего момента. */
+export async function resetAiBudget() {
+  await resumeAi();
   revalidatePath("/ai");
 }
 
