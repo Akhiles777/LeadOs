@@ -1,3 +1,4 @@
+import { contactsFromFields, mergeContacts, readContacts } from "@/lib/contacts";
 import { Prisma } from "@/generated/prisma/client";
 import { drainQueueAfterResponse } from "@/ai/inline";
 import { autoScoreEnabled, enqueue } from "@/ai/jobs";
@@ -12,7 +13,7 @@ function companyKey(title: string): string {
     .replace(/ё/g, "е")
     .replace(/["«»„“”'`]/g, "")
     .split(/[|(/,]/)[0]
-    .replace(/\b(ооо|ип|зао|оао|сеть|компания|клиника|стоматология|магазин|салон|центр)\b/g, " ")
+    .replace(/(?<!\p{L})(ооо|ип|зао|оао|сеть|компания|клиника|стоматология|магазин|салон|центр)(?!\p{L})/gu, " ")
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
 }
@@ -46,9 +47,14 @@ export async function findCompanyToEnrich(input: LeadInput): Promise<string | nu
 /** Дописывает то, чего не хватало: телефон, сайт, нишу и ссылку на карточку. */
 export async function enrichCompany(leadId: string, input: LeadInput): Promise<void> {
   const lead = await db.lead.findUniqueOrThrow({ where: { id: leadId } });
+  const fromMaps = contactsFromFields(input).map((c) => ({ ...c, source: "maps" as const, note: input.sourceRef ? "карточка на картах" : undefined }));
+  const contacts = mergeContacts(readContacts(lead.contacts), fromMaps);
   await db.lead.update({
     where: { id: leadId },
     data: {
+      contacts: contacts as unknown as Prisma.InputJsonArray,
+      contactTg: lead.contactTg ?? input.contactTg,
+      contactEmail: lead.contactEmail ?? input.contactEmail,
       contactPhone: lead.contactPhone ?? input.contactPhone,
       website: lead.website ?? input.website,
       category: lead.category ?? input.category,

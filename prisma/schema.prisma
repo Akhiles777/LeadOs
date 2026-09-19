@@ -8,44 +8,50 @@ datasource db {
 }
 
 model Lead {
-  id             String     @id @default(cuid())
-  source         Source
-  sourceRef      String? // ссылка на Kwork-заказ, ID канала, место 2GIS и т.д.
-  title          String
-  rawText        String     @db.Text // исходный текст заказа/поста
-  category       String?
-  budgetMin      Int?
-  budgetMax      Int?
-  contactName    String?
-  contactPhone   String?
-  contactTg      String?
-  contactEmail   String?
-  website        String?
-  region         String?
-  status         LeadStatus @default(NEW)
+  id                 String     @id @default(cuid())
+  source             Source
+  sourceRef          String? // ссылка на Kwork-заказ, ID канала, место 2GIS и т.д.
+  title              String
+  rawText            String     @db.Text // исходный текст заказа/поста
+  category           String?
+  budgetMin          Int?
+  budgetMax          Int?
+  contactName        String?
+  contactPhone       String?
+  contactTg          String?
+  contactEmail       String?
+  website            String?
+  region             String?
+  status             LeadStatus @default(NEW)
   // Индекс самого дальнего этапа воронки, до которого дошёл лид (NEW=0 … WON=5).
   // Не уменьшается при LOST/SKIPPED — нужен для честной конверсии между этапами.
-  furthestStage  Int        @default(0)
-  score          Int? // 0-100, ставит AI-модуль оценки (фаза 3)
-  scoreReason    String?    @db.Text
-  redFlags       String[]
-  aiVerdict      AiVerdict? // рекомендация AI: брать / подумать / пропустить
-  aiAssessment   Json? // полный ответ оценки: причины, флаги с пояснениями, вопросы заказчику
-  scoredAt       DateTime?
-  followUpAt     DateTime? // вручную назначенная дата следующего касания
-  importBatch    String? // id пачки импорта из таблицы — чтобы можно было отменить импорт целиком
+  furthestStage      Int        @default(0)
+  score              Int? // 0-100, ставит AI-модуль оценки (фаза 3)
+  scoreReason        String?    @db.Text
+  redFlags           String[]
+  aiVerdict          AiVerdict? // рекомендация AI: брать / подумать / пропустить
+  aiAssessment       Json? // полный ответ оценки: причины, флаги с пояснениями, вопросы заказчику
+  scoredAt           DateTime?
+  followUpAt         DateTime? // вручную назначенная дата следующего касания
+  importBatch        String? // id пачки импорта из таблицы — чтобы можно было отменить импорт целиком
   // Кто из клиентов порекомендовал — для лидов-рекомендаций.
-  referredById   String?
-  referredBy     Lead?      @relation("Referrals", fields: [referredById], references: [id], onDelete: SetNull)
-  referrals      Lead[]     @relation("Referrals")
+  referredById       String?
+  referredBy         Lead?      @relation("Referrals", fields: [referredById], references: [id], onDelete: SetNull)
+  referrals          Lead[]     @relation("Referrals")
   // Результат автоматической проверки сайта компании (src/lib/site-check.ts) — для холодных лидов.
-  siteCheck      Json?
+  siteCheck          Json?
+  // Все найденные каналы связи: [{ kind, value, url, source }] — телефоны, WhatsApp, Telegram, VK, почта (src/lib/contacts.ts).
+  contacts           Json?
+  // Подобранное AI решение для холодной компании: что предложить, почему, цена и срок (src/ai/tasks/pitch.ts).
+  pitch              Json?
+  // Когда искали контакты через веб-поиск — чтобы не платить за повторный поиск.
+  contactsSearchedAt DateTime?
   // Хэш нормализованного текста — ловит один и тот же пост, разосланный по разным каналам.
-  contentHash    String?
+  contentHash        String?
   // Последнее «движение» по лиду: смена статуса или активность. Основа для поиска зависших.
-  lastActivityAt DateTime   @default(now())
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
+  lastActivityAt     DateTime   @default(now())
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
 
   activities Activity[]
   offers     OfferDraft[]
@@ -280,6 +286,7 @@ enum AiJobType {
   DIGEST
   SITE_CHECK // проверить сайт компании, найденной автоматически
   COLD_OFFER // подготовить примерный оффер холодной компании
+  FIND_CONTACTS // найти контакты компании через веб-поиск
 }
 
 enum AiJobStatus {

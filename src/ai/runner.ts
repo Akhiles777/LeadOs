@@ -3,7 +3,10 @@ import { db } from "@/lib/db";
 import { staleDays } from "@/lib/leads";
 import { hourInZone } from "@/lib/time";
 import { AiApiError, AiNotConfiguredError, AiResponseError } from "@/ai/client";
-import { claimJob, completeJob, enqueue, failJob } from "@/ai/jobs";
+import { claimJob, completeJob, contactSearchEnabled, DeferJobError, deferJob, enqueue, failJob } from "@/ai/jobs";
+import { findContacts } from "@/ai/tasks/find-contacts";
+import { generatePitch } from "@/ai/tasks/pitch";
+import { allContacts, hasReachableContact } from "@/lib/contacts";
 import { assessLead } from "@/ai/tasks/assess";
 import { buildDigest, moscowDay } from "@/ai/tasks/digest";
 import { generateDraft } from "@/ai/tasks/drafts";
@@ -25,16 +28,39 @@ export async function runJob(job: AiJob): Promise<void> {
     case "SITE_CHECK":
       if (!job.leadId) throw new AiResponseError("Нет leadId");
       await checkLeadWebsite(job.leadId);
+      await searchContactsIfMissing(job.leadId);
       return;
-    case "COLD_OFFER":
+    case "FIND_CONTACTS": {
       if (!job.leadId) throw new AiResponseError("Нет leadId");
-      // Скрипт звонка опирается на проверку сайта, поэтому задача ставится после неё.
-      await generateDraft(job.leadId, "cold_call_script");
+      const found = await findContacts(job.leadId);
+      // Нашёлся сайт — проверим и его: там часто WhatsApp и детали для оффера.
+      if (found.website) await enqueue("SITE_CHECK", job.leadId);
       return;
+    }
+    case "COLD_OFFER": {
+      if (!job.leadId) throw new AiResponseError("Нет leadId");
+      // Оффер строится на проверке сайта и найденных контактах — ждём их, если они ещё в очереди.
+      const waiting = await db.aiJob.count({ where: { leadId: job.leadId, type: { in: ["SITE_CHECK", "FIND_CONTACTS"] }, status: { in: ["PENDING", "RUNNING"] } } });
+      if (waiting) throw new DeferJobError(60_000);
+      await generatePitch(job.leadId);
+      return;
+    }
     case "DIGEST":
       await buildDigest();
       return;
   }
+}
+
+/** После проверки сайта: если связаться всё ещё не с кем — один раз поищем контакты в интернете. */
+async function searchContactsIfMissing(leadId: string) {
+  if (!contactSearchEnabled()) return;
+  const lead = await db.lead.findUnique({
+    where: { id: leadId },
+    select: { source: true, contactsSearchedAt: true, contacts: true, contactPhone: true, contactTg: true, contactEmail: true },
+  });
+  if (!lead || lead.source !== "COLD_LOCAL" || lead.contactsSearchedAt) return;
+  if (hasReachableContact(allContacts(lead))) return;
+  await enqueue("FIND_CONTACTS", leadId);
 }
 
 function isRetryable(e: unknown): boolean {
@@ -68,7 +94,8 @@ export async function processNextJob(): Promise<boolean> {
     await runJob(job);
     await completeJob(job.id);
   } catch (e) {
-    await failJob(job, e, isRetryable(e));
+    if (e instanceof DeferJobError) await deferJob(job, e.delayMs);
+    else await failJob(job, e, isRetryable(e));
   }
   return true;
 }

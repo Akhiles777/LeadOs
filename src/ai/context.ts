@@ -2,6 +2,7 @@ import type { Activity, Deal, DealAddon, Lead, OfferDraft, Payment, PortfolioCas
 import { db } from "@/lib/db";
 import { ACTIVITY_LABEL, formatBudget, formatDate, SOURCE_LABEL, STATUS_LABEL } from "@/lib/leads";
 import { opportunity, type SiteCheck } from "@/lib/site-check";
+import { allContacts, CONTACT_LABEL } from "@/lib/contacts";
 
 export const BRAND_CATEGORIES = [
   { key: "о_себе", label: "О себе", hint: "Кто ты, чем занимаешься, в каком городе, сколько лет в разработке" },
@@ -10,6 +11,11 @@ export const BRAND_CATEGORIES = [
   { key: "стиль_отклика", label: "Стиль отклика", hint: "Правила из твоего отклик-гайда: без списков, без пересказа ТЗ…" },
   { key: "тон", label: "Тон и обращение", hint: "На «вы»/«ты», приветствие, длина, подпись" },
   { key: "цены", label: "Цены и сроки", hint: "Ориентиры по бюджетам, минимальный чек, как говоришь о цене" },
+  {
+    key: "услуги",
+    label: "Мои решения и цены",
+    hint: "Что продаёшь бизнесу и почём: «Электронное меню — от 25 000 ₽, 7 дней», «CRM для клиники — от 200 000 ₽». Важнее встроенного каталога",
+  },
 ] as const;
 
 export type BrandCategory = (typeof BRAND_CATEGORIES)[number]["key"];
@@ -68,6 +74,7 @@ export function leadContext(lead: LeadWithHistory): string {
     lead.website ? `Сайт: ${lead.website}` : "",
     opp && opp.reasons.length ? `Проверка сайта (${check!.status}): ${opp.reasons.join("; ")}` : "",
     check?.platform ? `Платформа сайта: ${check.platform}` : "",
+    channelsLine(lead),
   ].filter(Boolean);
 
   const history = (lead.activities ?? [])
@@ -96,7 +103,28 @@ export function leadContext(lead: LeadWithHistory): string {
     lead.rawText.trim() || "(пусто)",
     history.length ? `\nИстория касаний:\n${history.join("\n")}` : "",
     "</lead>",
-  ].join("\n");
+    siteBlock(check),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Какими каналами можно связаться — от этого зависит, какие тексты нужны (звонок, WhatsApp, письмо). */
+function channelsLine(lead: LeadWithHistory): string {
+  const kinds = [...new Set(allContacts(lead).map((c) => CONTACT_LABEL[c.kind]))];
+  return kinds.length ? `Каналы связи: ${kinds.join(", ")}` : "Каналы связи: не найдены";
+}
+
+/** Что написано на сайте компании — AI цепляется за это, а не пишет общими словами. */
+function siteBlock(check: SiteCheck | null): string {
+  if (!check || check.status !== "ok") return "";
+  const parts = [
+    check.title ? `Заголовок: ${check.title}` : "",
+    check.description ? `Описание: ${check.description}` : "",
+    check.headings?.length ? `Разделы и заголовки: ${check.headings.join(" | ")}` : "",
+    check.excerpt ? `Начало текста главной: ${check.excerpt.slice(0, 1200)}` : "",
+  ].filter(Boolean);
+  return parts.length ? ["", "<site>", ...parts, "</site>"].join("\n") : "";
 }
 
 /** Примеры прошлых отправленных сообщений того же типа: сначала те, что привели к сделке. */

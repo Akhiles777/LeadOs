@@ -1,9 +1,11 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { type Contact, contactFromUrl, extractContacts, mergeContacts, visibleText } from "@/lib/contacts";
 
 /**
- * Проверка сайта компании для холодного поиска: открывается ли, на чём сделан, есть ли запись/магазин/CRM.
- * Один GET главной страницы — как обычный визит браузера. Без обхода страниц и форм.
+ * Проверка сайта компании для холодного поиска: открывается ли, на чём сделан, есть ли запись/магазин/CRM,
+ * какие каналы связи указаны и о чём сайт (для AI). Главная страница и, если есть, страница «Контакты» —
+ * как обычный визит браузера. Без обхода сайта и форм.
  */
 
 export type SiteStatus = "no_site" | "social_only" | "ok" | "unreachable" | "blocked";
@@ -26,6 +28,11 @@ export type SiteCheck = {
   hasAnalytics?: boolean;
   lastYear?: number; // самый поздний год в копирайте
   sizeKb?: number;
+  description?: string; // meta description
+  headings?: string[]; // h1–h3 главной: услуги, акции, чем гордятся
+  excerpt?: string; // начало видимого текста — AI цитирует конкретику, а не пишет общими словами
+  contacts?: Contact[];
+  contactsPage?: string;
 };
 
 const SOCIAL_HOSTS = /(^|\.)(vk\.com|vk\.ru|ok\.ru|instagram\.com|facebook\.com|t\.me|telegram\.me|wa\.me|whatsapp\.com|taplink\.cc|taplink\.ws|linktr\.ee|youtube\.com|dzen\.ru|avito\.ru)$/i;
@@ -175,7 +182,16 @@ export function analyzeHtml(html: string, finalUrl: URL): Omit<SiteCheck, "statu
     .map(Number)
     .filter((y) => y >= 1995 && y <= nowYear);
 
+  const description = /<meta[^>]+name=["']description["'][^>]*content=["']([^"']*)["']/i.exec(html)?.[1] ??
+    /<meta[^>]+content=["']([^"']*)["'][^>]*name=["']description["']/i.exec(html)?.[1];
+  const headings = [...html.matchAll(/<h([1-3])[^>]*>([\s\S]*?)<\/h\1>/gi)]
+    .map((m) => visibleText(m[2]).replace(/\s+/g, " ").trim())
+    .filter((h) => h.length >= 3 && h.length <= 160);
+
   return {
+    description: description ? visibleText(description).slice(0, 300) || undefined : undefined,
+    headings: headings.length ? [...new Set(headings)].slice(0, 12) : undefined,
+    excerpt: visibleText(html).replace(/\s+/g, " ").slice(0, 1500) || undefined,
     finalUrl: finalUrl.toString(),
     https: finalUrl.protocol === "https:",
     mobile: /<meta[^>]+name=["']?viewport/i.test(html),
@@ -191,25 +207,82 @@ export function analyzeHtml(html: string, finalUrl: URL): Omit<SiteCheck, "statu
   };
 }
 
+const CONTACT_PAGE = /контакт|kontakt|contact|svyaz|связ/i;
+const LINK_PAGES = /(^|\.)(taplink\.(cc|ws)|linktr\.ee)$/i;
+
+/** Ссылка на страницу «Контакты» того же сайта, если на главной её видно. */
+export function findContactsPage(html: string, base: URL): URL | null {
+  for (const m of html.matchAll(/<a\b[^>]*href\s*=\s*["']([^"'#]+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+    const [, href, inner] = m;
+    if (!CONTACT_PAGE.test(href) && !CONTACT_PAGE.test(visibleText(inner))) continue;
+    try {
+      const url = new URL(href, base);
+      if (url.hostname.replace(/^www\./, "") !== base.hostname.replace(/^www\./, "")) continue;
+      if (url.pathname === base.pathname) continue;
+      return url;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+/** Контакты со страницы «Контакты»: одна дополнительная загрузка, ошибки не мешают проверке. */
+async function contactsFromPage(url: URL, fetcher: Fetcher): Promise<Contact[]> {
+  try {
+    const { status, html } = await fetcher(url);
+    return status < 400 && html ? extractContacts(html, "site").map((c) => ({ ...c, note: "страница «Контакты»" })) : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function checkWebsite(website: string | null | undefined, fetcher: Fetcher = safeFetch): Promise<SiteCheck> {
   const checkedAt = new Date().toISOString();
   if (!website?.trim()) return { status: "no_site", checkedAt };
 
   const url = toUrl(website);
   if (!url) return { status: "unreachable", checkedAt, url: website, error: "Некорректный адрес" };
-  if (SOCIAL_HOSTS.test(url.hostname)) return { status: "social_only", checkedAt, url: url.toString() };
+  if (SOCIAL_HOSTS.test(url.hostname)) return socialOnly(url, url, checkedAt, fetcher);
 
   try {
     const { finalUrl, status, html } = await fetcher(url);
-    if (SOCIAL_HOSTS.test(finalUrl.hostname)) return { status: "social_only", checkedAt, url: url.toString(), finalUrl: finalUrl.toString() };
+    if (SOCIAL_HOSTS.test(finalUrl.hostname)) return socialOnly(url, finalUrl, checkedAt, fetcher);
     if (status >= 400 || !html) {
       return { status: "unreachable", checkedAt, url: url.toString(), finalUrl: finalUrl.toString(), httpStatus: status, error: status >= 400 ? `HTTP ${status}` : "Пустой ответ" };
     }
-    return { status: "ok", checkedAt, url: url.toString(), httpStatus: status, ...analyzeHtml(html, finalUrl) };
+    let contacts = extractContacts(html, "site");
+    const contactsPage = findContactsPage(html, finalUrl);
+    if (contactsPage) contacts = mergeContacts(contacts, await contactsFromPage(contactsPage, fetcher));
+    return {
+      status: "ok",
+      checkedAt,
+      url: url.toString(),
+      httpStatus: status,
+      ...analyzeHtml(html, finalUrl),
+      contacts: contacts.length ? contacts : undefined,
+      contactsPage: contactsPage?.toString(),
+    };
   } catch (e) {
     if (e instanceof BlockedUrlError) return { status: "blocked", checkedAt, url: url.toString(), error: e.message };
     return { status: "unreachable", checkedAt, url: url.toString(), error: humanError(e) };
   }
+}
+
+/** Вместо сайта — соцсеть или мультиссылка: сама ссылка уже контакт, а у taplink внутри обычно WhatsApp и телефон. */
+async function socialOnly(url: URL, finalUrl: URL, checkedAt: string, fetcher: Fetcher): Promise<SiteCheck> {
+  let contacts: Contact[] = [];
+  const self = contactFromUrl(finalUrl.toString(), "site");
+  if (self) contacts.push(self);
+  if (LINK_PAGES.test(finalUrl.hostname)) {
+    try {
+      const { status, html } = await fetcher(finalUrl);
+      if (status < 400 && html) contacts = mergeContacts(contacts, extractContacts(html, "site"));
+    } catch {
+      // мультиссылка не открылась — остаётся то, что есть
+    }
+  }
+  return { status: "social_only", checkedAt, url: url.toString(), finalUrl: finalUrl.toString(), contacts: contacts.length ? contacts : undefined };
 }
 
 function humanError(e: unknown): string {

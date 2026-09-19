@@ -109,7 +109,7 @@ export function parseSource(raw: string): Source | null {
   const v = norm(raw);
   if (!v) return null;
   if (/kwork|кворк/.test(v)) return "KWORK";
-  if (/telegram|телеграм|\bтг\b|tg/.test(v)) return "TELEGRAM";
+  if (/telegram|телеграм|(?<!\p{L})тг(?!\p{L})|tg/u.test(v)) return "TELEGRAM";
   if (/рекоменд|знаком|сарафан|referr|друг/.test(v)) return "REFERRAL";
   if (/холод|звон|карт|2гис|2gis|яндекс|cold/.test(v)) return "COLD_LOCAL";
   return "MANUAL";

@@ -8,16 +8,44 @@ import {
   assessLeadNow,
   deleteAssessmentFeedback,
   deleteDraft,
+  findContactsNow,
   generateDraftNow,
+  generatePitchNow,
   markDraftSent,
   runTuning,
   submitAssessmentFeedback,
   updateDraftText,
 } from "@/lib/ai-actions";
 import { changeStatus } from "@/lib/actions";
+import type { DraftChannel as Channel } from "@/ai/tasks/drafts";
 import { buttonClass, ghostButtonClass, inputClass } from "@/components/ui";
 
-type Channel = "kwork_response" | "telegram_reply" | "cold_message" | "cold_call_script" | "follow_up" | "referral_request" | "upsell";
+/** Куда отправить черновик в один тап: WhatsApp с готовым текстом, почта с темой, Telegram (текст копируется). */
+export type SendTargets = { whatsapp?: string | null; email?: string | null; telegram?: string | null };
+
+function emailParts(text: string): { subject: string; body: string } {
+  const m = /^Тема:\s*(.+)\n+/i.exec(text);
+  return m ? { subject: m[1].trim(), body: text.slice(m[0].length) } : { subject: "", body: text };
+}
+
+function sendLinks(channel: string, text: string, to: SendTargets) {
+  const links: { key: string; label: string; href: string; copy?: boolean }[] = [];
+  const isScript = channel === "cold_call_script";
+  if (isScript) return links;
+  if (channel === "cold_email" && to.email) {
+    const { subject, body } = emailParts(text);
+    const q = new URLSearchParams({ subject, body }).toString().replace(/\+/g, "%20");
+    links.push({ key: "mail", label: "Открыть в почте", href: `mailto:${to.email}?${q}` });
+    return links;
+  }
+  if (to.whatsapp) links.push({ key: "wa", label: "Открыть в WhatsApp", href: `https://wa.me/${to.whatsapp}?text=${encodeURIComponent(text)}` });
+  if (to.telegram) links.push({ key: "tg", label: "Telegram (текст скопируется)", href: `https://t.me/${to.telegram.replace(/^@/, "")}`, copy: true });
+  if (!links.length && to.email) {
+    const q = new URLSearchParams({ body: text }).toString().replace(/\+/g, "%20");
+    links.push({ key: "mail", label: "Открыть в почте", href: `mailto:${to.email}?${q}` });
+  }
+  return links;
+}
 
 function useAiAction() {
   const [pending, start] = useTransition();
@@ -84,7 +112,17 @@ export function GenerateButtons({ leadId, channels, labels }: { leadId: string; 
   );
 }
 
-export function DraftEditor({ draft, label }: { draft: { id: string; text: string; notes: string | null; sentAt: string | null; model: string | null; createdAt: string }; label: string }) {
+export function DraftEditor({
+  draft,
+  label,
+  channel = "",
+  sendTo = {},
+}: {
+  draft: { id: string; text: string; notes: string | null; sentAt: string | null; model: string | null; createdAt: string };
+  label: string;
+  channel?: string;
+  sendTo?: SendTargets;
+}) {
   const [text, setText] = useState(draft.text);
   const [copied, setCopied] = useState(false);
   const [pending, start] = useTransition();
@@ -113,6 +151,21 @@ export function DraftEditor({ draft, label }: { draft: { id: string; text: strin
         >
           {copied ? "Скопировано ✓" : "Копировать"}
         </button>
+        {!draft.sentAt &&
+          sendLinks(channel, text, sendTo).map((l) => (
+            <a
+              key={l.key}
+              href={l.href}
+              target={l.href.startsWith("http") ? "_blank" : undefined}
+              rel="noreferrer"
+              onClick={() => {
+                if (l.copy) void navigator.clipboard.writeText(text);
+              }}
+              className={ghostButtonClass}
+            >
+              {l.label}
+            </a>
+          ))}
         {dirty && (
           <button type="button" disabled={pending} onClick={() => start(() => updateDraftText(draft.id, text))} className={ghostButtonClass}>
             Сохранить правки
@@ -132,6 +185,49 @@ export function DraftEditor({ draft, label }: { draft: { id: string; text: strin
           удалить
         </button>
       </div>
+    </div>
+  );
+}
+
+/** «Подобрать оффер»: решение под компанию + скрипт звонка, WhatsApp и письмо. */
+export function PitchButton({ leadId, again }: { leadId: string; again: boolean }) {
+  const { pending, error, run } = useAiAction();
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <button type="button" disabled={pending} onClick={() => run(() => generatePitchNow(leadId))} className={again ? ghostButtonClass : buttonClass}>
+        {pending ? "Подбираю и пишу… (1–2 минуты)" : again ? "Подобрать заново" : "Подобрать оффер и написать тексты"}
+      </button>
+      {error && <p className="text-xs text-rose-600">{error}</p>}
+    </div>
+  );
+}
+
+/** Поиск контактов в интернете по кнопке (веб-поиск RouterAI, ~2–5 ₽). */
+export function FindContactsButton({ leadId, searchedAt }: { leadId: string; searchedAt: string | null }) {
+  const [pending, start] = useTransition();
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <button
+        type="button"
+        disabled={pending}
+        className={ghostButtonClass}
+        onClick={() =>
+          start(async () => {
+            setMessage(null);
+            setError(null);
+            const res = await findContactsNow(leadId);
+            if ("error" in res) setError(res.error);
+            else setMessage(res.added || res.website ? `Найдено: ${res.added} контакт(а)${res.website ? `, сайт ${res.website}` : ""}` : "Ничего подтверждённого не нашлось — попробуй карты");
+          })
+        }
+      >
+        {pending ? "Ищу в интернете… (до минуты)" : searchedAt ? "Поискать контакты ещё раз" : "Найти контакты в интернете"}
+      </button>
+      {searchedAt && !message && <p className="text-xs text-zinc-500">Искал {searchedAt}</p>}
+      {message && <p className="text-xs text-emerald-700 dark:text-emerald-400">{message}</p>}
+      {error && <p className="text-xs text-rose-600">{error}</p>}
     </div>
   );
 }

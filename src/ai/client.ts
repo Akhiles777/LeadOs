@@ -8,19 +8,40 @@ import { db } from "@/lib/db";
 
 export const AI_PROVIDER_NAME = "RouterAI";
 export const ROUTERAI_BASE_URL = (process.env.ROUTERAI_BASE_URL?.trim() || "https://routerai.ru/api/v1").replace(/\/+$/, "");
-export const AI_MODEL = process.env.AI_MODEL?.trim() || "openai/gpt-4o";
+// Claude Opus 5 пишет по-русски заметно живее и точнее gpt-4o; через RouterAI доступна со structured outputs.
+export const AI_MODEL = process.env.AI_MODEL?.trim() || "anthropic/claude-opus-5";
+// Модель для веб-поиска контактов: нужна поддержка плагина web. По умолчанию — та же.
+export const AI_SEARCH_MODEL = process.env.AI_SEARCH_MODEL?.trim() || AI_MODEL;
 
-// У RouterAI цены зависят от выбранной модели и провайдера. Если задать тарифы в env,
-// журнал покажет приблизительную стоимость в рублях за 1M токенов.
-function aiPrice() {
-  return {
-    input: Number(process.env.AI_PRICE_INPUT_RUB_PER_1M ?? 0),
-    output: Number(process.env.AI_PRICE_OUTPUT_RUB_PER_1M ?? 0),
-  };
+type Price = { input: number; output: number }; // ₽ за 1 токен
+
+let priceCache: { at: number; prices: Map<string, Price> } | null = null;
+
+/**
+ * Тарифы моделей: из env (₽ за 1M токенов), иначе из каталога RouterAI (/models, ₽ за токен), кэш на 12 часов.
+ * Каталог недоступен — стоимость 0, вызов от этого не страдает.
+ */
+async function priceFor(model: string): Promise<Price> {
+  const envIn = Number(process.env.AI_PRICE_INPUT_RUB_PER_1M ?? 0);
+  const envOut = Number(process.env.AI_PRICE_OUTPUT_RUB_PER_1M ?? 0);
+  if (envIn || envOut) return { input: envIn / 1_000_000, output: envOut / 1_000_000 };
+  if (override) return { input: 0, output: 0 };
+  if (!priceCache || Date.now() - priceCache.at > 12 * 3_600_000) {
+    try {
+      const res = await fetch(`${ROUTERAI_BASE_URL}/models`, { signal: AbortSignal.timeout(10_000) });
+      const data = (await res.json()) as { data?: { id: string; pricing?: { prompt?: string; completion?: string } }[] };
+      const prices = new Map<string, Price>();
+      for (const m of data.data ?? []) prices.set(m.id, { input: Number(m.pricing?.prompt ?? 0), output: Number(m.pricing?.completion ?? 0) });
+      priceCache = { at: Date.now(), prices };
+    } catch {
+      priceCache = { at: Date.now() - 11 * 3_600_000, prices: priceCache?.prices ?? new Map() }; // повторим через час
+    }
+  }
+  return priceCache.prices.get(model) ?? priceCache.prices.get(model.replace(/:online$/, "")) ?? { input: 0, output: 0 };
 }
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
-export type AiPurpose = "assess" | "offer" | "call_script" | "follow_up" | "digest" | "tuning";
+export type AiPurpose = "assess" | "offer" | "pitch" | "contacts" | "call_script" | "follow_up" | "digest" | "tuning";
 
 export class AiNotConfiguredError extends Error {
   constructor() {
@@ -48,8 +69,9 @@ type ChatCompletionRequest = {
   model: string;
   messages: ChatMessage[];
   max_tokens: number;
-  temperature: number;
-  verbosity?: Effort;
+  temperature?: number;
+  reasoning?: { effort: "low" | "medium" | "high" };
+  plugins?: { id: "web"; max_results?: number; engine?: "native" | "exa"; search_prompt?: string }[];
   response_format: {
     type: "json_schema";
     json_schema: { name: string; strict: boolean; schema: unknown };
@@ -64,7 +86,13 @@ type ChatCompletionRequest = {
 };
 type ChatCompletionResponse = {
   model?: string;
-  choices?: { message?: { content?: string | null }; finish_reason?: string | null }[];
+  choices?: {
+    message?: {
+      content?: string | null;
+      annotations?: { type?: string; url_citation?: { url?: string; title?: string; content?: string } }[];
+    };
+    finish_reason?: string | null;
+  }[];
   usage?: {
     prompt_tokens?: number;
     completion_tokens?: number;
@@ -133,7 +161,16 @@ export type StructuredRequest<S extends z.ZodType> = {
   schema: S;
   effort: Effort;
   maxTokens?: number;
+  /** Веб-поиск через плагин RouterAI: модель видит свежие страницы, ответ приходит со ссылками-источниками. */
+  webSearch?: { maxResults?: number; searchPrompt?: string };
 };
+
+export type WebCitation = { url: string; title?: string; content?: string };
+
+/** Уровень рассуждений: у RouterAI (как у OpenRouter) — low/medium/high. */
+function reasoningEffort(effort: Effort): "low" | "medium" | "high" {
+  return effort === "low" ? "low" : effort === "medium" ? "medium" : "high";
+}
 
 function schemaName(purpose: AiPurpose): string {
   return `leados_${purpose}`;
@@ -153,11 +190,19 @@ function parseJsonContent(content: string): unknown {
 }
 
 export async function generateStructured<S extends z.ZodType>(req: StructuredRequest<S>): Promise<z.infer<S>> {
+  return (await generateStructuredWithSources(req)).data;
+}
+
+/** То же, что generateStructured, но вместе с источниками веб-поиска (если он включён). */
+export async function generateStructuredWithSources<S extends z.ZodType>(
+  req: StructuredRequest<S>,
+): Promise<{ data: z.infer<S>; citations: WebCitation[] }> {
   const api = chatCompletionsApi(); // без ключа — ошибка до вызова, в журнал вызовов не пишем
   const started = Date.now();
+  const model = req.webSearch ? AI_SEARCH_MODEL : AI_MODEL;
   const log = {
     purpose: req.purpose,
-    model: AI_MODEL,
+    model,
     leadId: req.leadId ?? null,
     inputTokens: 0,
     outputTokens: 0,
@@ -168,10 +213,14 @@ export async function generateStructured<S extends z.ZodType>(req: StructuredReq
 
   try {
     const response = await api.create({
-      model: AI_MODEL,
-      max_tokens: req.maxTokens ?? 6000,
-      temperature: 0.2,
-      verbosity: req.effort,
+      model,
+      max_tokens: req.maxTokens ?? 8000,
+      // Температуру не задаём: с включёнными рассуждениями Claude принимает только значение по умолчанию,
+      // а низкая температура и давала однотипные «шаблонные» тексты.
+      reasoning: { effort: reasoningEffort(req.effort) },
+      ...(req.webSearch && {
+        plugins: [{ id: "web" as const, engine: "exa" as const, max_results: req.webSearch.maxResults ?? 6, search_prompt: req.webSearch.searchPrompt }],
+      }),
       provider: providerRouting(),
       response_format: {
         type: "json_schema",
@@ -193,13 +242,13 @@ export async function generateStructured<S extends z.ZodType>(req: StructuredReq
     });
 
     const u = response.usage;
-    log.model = response.model ?? AI_MODEL;
+    log.model = response.model ?? model;
     log.inputTokens = u?.prompt_tokens ?? u?.input_tokens ?? 0;
     log.outputTokens = u?.completion_tokens ?? u?.output_tokens ?? 0;
     log.cacheReadTokens = u?.cache_read_input_tokens ?? 0;
     log.cacheCreationTokens = u?.cache_creation_input_tokens ?? 0;
-    const price = aiPrice();
-    log.costUsd = (log.inputTokens * price.input + log.outputTokens * price.output) / 1_000_000;
+    const price = await priceFor(model);
+    log.costUsd = log.inputTokens * price.input + log.outputTokens * price.output; // в рублях, поле названо исторически
 
     const choice = response.choices?.[0];
     if (!choice?.message?.content) throw new AiResponseError("Модель вернула пустой ответ");
@@ -207,7 +256,10 @@ export async function generateStructured<S extends z.ZodType>(req: StructuredReq
 
     const parsed = req.schema.parse(parseJsonContent(choice.message.content));
     await db.aiCall.create({ data: { ...log, ok: true, durationMs: Date.now() - started } });
-    return parsed as z.infer<S>;
+    const citations = (choice.message.annotations ?? [])
+      .map((a) => a.url_citation)
+      .filter((c): c is WebCitation => Boolean(c?.url));
+    return { data: parsed as z.infer<S>, citations };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     await db.aiCall.create({ data: { ...log, ok: false, error: message.slice(0, 2000), durationMs: Date.now() - started } }).catch(() => {});

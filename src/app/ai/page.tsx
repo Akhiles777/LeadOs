@@ -13,12 +13,15 @@ import { type StoredTuning, TUNING_KEY } from "@/ai/tasks/tuning";
 import { ApplyRuleButton, TuningButton } from "@/components/ai-panels";
 import { CaseControls, QueueButtons } from "@/components/ai-settings-controls";
 import { Card, EmptyState, Field, inputClass, PageHeader } from "@/components/ui";
+import { SOLUTIONS } from "@/ai/solutions";
 
 const VERDICT_RU = { TAKE: "брать", CONSIDER: "подумать", SKIP: "пропустить" } as const;
 
 const PURPOSE_LABEL: Record<string, string> = {
   assess: "Оценка лидов",
   offer: "Отклики и сообщения",
+  pitch: "Подбор оффера холодным",
+  contacts: "Поиск контактов",
   call_script: "Скрипты звонков",
   follow_up: "Follow-up",
   digest: "Дайджест",
@@ -107,7 +110,7 @@ export default async function AiPage() {
           )}
         </Card>
 
-        <Card title={`Расход за 30 дней · ≈ $${totalCost.toFixed(2)}`}>
+        <Card title={`Расход за 30 дней · ≈ ${totalCost.toFixed(0)} ₽`}>
           {usage.length === 0 ? (
             <EmptyState>Вызовов модели ещё не было</EmptyState>
           ) : (
@@ -118,7 +121,7 @@ export default async function AiPage() {
                   <th className="py-1 text-right font-medium">Вызовов</th>
                   <th className="py-1 text-right font-medium">Токены вход/выход</th>
                   <th className="py-1 text-right font-medium">Из кэша</th>
-                  <th className="py-1 text-right font-medium">$</th>
+                  <th className="py-1 text-right font-medium">₽</th>
                 </tr>
               </thead>
               <tbody className="tabular-nums">
@@ -139,7 +142,9 @@ export default async function AiPage() {
               </tbody>
             </table>
           )}
-          <p className="mt-3 text-xs text-zinc-500">Стоимость считается по тарифам из AI_PRICE_*; точные суммы — в кабинете RouterAI.</p>
+          <p className="mt-3 text-xs text-zinc-500">
+            Примерно — по тарифам модели из каталога RouterAI (или AI_PRICE_*), без стоимости веб-поиска. Точные суммы — в кабинете RouterAI.
+          </p>
         </Card>
 
         <section id="tuning" className="scroll-mt-20 lg:col-span-2">
@@ -229,6 +234,36 @@ export default async function AiPage() {
               ))}
             </div>
           </ActionForm>
+        </Card>
+
+        <Card title={`Что AI предлагает бизнесу (${SOLUTIONS.length} решений)`} className="lg:col-span-2">
+          <p className="mb-4 text-sm text-zinc-500">
+            Встроенный каталог: для холодной компании AI выбирает одно решение под её нишу и то, чего ей не хватает, и строит на нём звонок,
+            сообщение и письмо. Цены — рыночные ориентиры; свои цены и решения впиши в правило «Мои решения и цены» — они важнее.
+          </p>
+          <div className="grid gap-3 md:grid-cols-2">
+            {SOLUTIONS.map((sol) => (
+              <details key={sol.id} className="rounded-lg border border-zinc-200 p-3 text-sm dark:border-zinc-800">
+                <summary className="cursor-pointer">
+                  <span className="font-medium">{sol.title}</span>
+                  <span className="block text-xs text-zinc-500">
+                    {sol.price} · {sol.days}
+                  </span>
+                </summary>
+                <div className="mt-2 flex flex-col gap-2 text-xs">
+                  <p>
+                    <b>Боли:</b> {sol.pains.join("; ")}
+                  </p>
+                  <p>
+                    <b>Что входит:</b> {sol.deliverables.join("; ")}
+                  </p>
+                  <p>
+                    <b>Первый шаг:</b> {sol.firstStep}
+                  </p>
+                </div>
+              </details>
+            ))}
+          </div>
         </Card>
 
         <Card title={`Кейсы (${cases.filter((c) => c.active).length} видны AI)`} className="lg:col-span-2">

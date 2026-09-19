@@ -7,6 +7,9 @@ import { enqueue, retryFailedJobs } from "@/ai/jobs";
 import { assessLead } from "@/ai/tasks/assess";
 import { applyRuleChange, suggestTuning } from "@/ai/tasks/tuning";
 import { type DraftChannel, generateDraft, isDraftChannel } from "@/ai/tasks/drafts";
+import { findContacts } from "@/ai/tasks/find-contacts";
+import { generatePitch } from "@/ai/tasks/pitch";
+import { checkLeadWebsite } from "@/lib/site-check-service";
 import type { FormState } from "@/lib/actions";
 import { changeStatus } from "@/lib/actions";
 import { aiErrorMessage } from "@/lib/ai-errors";
@@ -22,6 +25,7 @@ function revalidateLead(leadId: string) {
   revalidatePath(`/leads/${leadId}`);
   revalidatePath("/leads");
   revalidatePath("/pipeline");
+  revalidatePath("/prospecting");
   revalidatePath("/");
 }
 
@@ -41,6 +45,31 @@ export async function generateDraftNow(leadId: string, channel: DraftChannel): P
     await generateDraft(leadId, channel);
     revalidateLead(leadId);
     return { ok: true };
+  } catch (e) {
+    return aiError(e);
+  }
+}
+
+/** Подобрать решение и написать скрипт звонка, WhatsApp и письмо — одним вызовом. */
+export async function generatePitchNow(leadId: string): Promise<AiActionResult> {
+  try {
+    await generatePitch(leadId);
+    revalidateLead(leadId);
+    return { ok: true };
+  } catch (e) {
+    return aiError(e);
+  }
+}
+
+export type ContactsActionResult = { ok: true; added: number; website: string | null } | { error: string };
+
+/** Поиск контактов в интернете по кнопке. Нашёлся сайт — сразу проверяем и его (там часто WhatsApp). */
+export async function findContactsNow(leadId: string): Promise<ContactsActionResult> {
+  try {
+    const found = await findContacts(leadId);
+    if (found.website) await checkLeadWebsite(leadId).catch(() => null);
+    revalidateLead(leadId);
+    return { ok: true, ...found };
   } catch (e) {
     return aiError(e);
   }

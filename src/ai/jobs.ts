@@ -3,6 +3,25 @@ import { db } from "@/lib/db";
 import { isAiConfigured } from "@/ai/client";
 
 const MAX_ATTEMPTS = 3;
+
+/** Задача пока не может выполняться (ждёт другую) — вернуть в очередь без траты попытки. */
+export class DeferJobError extends Error {
+  constructor(public delayMs: number) {
+    super("Отложено: ждёт другие задачи по этому лиду");
+  }
+}
+
+export async function deferJob(job: AiJob, delayMs: number) {
+  await db.aiJob.update({
+    where: { id: job.id },
+    data: { status: "PENDING", lockedAt: null, attempts: { decrement: 1 }, runAfter: new Date(Date.now() + delayMs) },
+  });
+}
+
+/** Поиск контактов через веб-поиск платный (~2–5 ₽) — его можно выключить. */
+export function contactSearchEnabled(): boolean {
+  return isAiConfigured() && process.env.AI_FIND_CONTACTS !== "false";
+}
 const LOCK_TIMEOUT_MS = 10 * 60_000;
 
 export function autoScoreEnabled(): boolean {
@@ -18,12 +37,13 @@ export async function enqueue(type: AiJobType, leadId: string | null = null, run
 
 /** Задачи, которым не нужна модель: их выполняем даже без ключа RouterAI. */
 const NON_AI_TYPES: AiJobType[] = ["SITE_CHECK"];
+const ALL_TYPES: AiJobType[] = ["SCORE_LEAD", "FOLLOW_UP", "DIGEST", "SITE_CHECK", "COLD_OFFER", "FIND_CONTACTS"];
 
 /** Забирает одну задачу. SKIP LOCKED — несколько воркеров не возьмут одну и ту же. Зависшие RUNNING возвращаются в работу. */
 export async function claimJob(): Promise<AiJob | null> {
   const staleBefore = new Date(Date.now() - LOCK_TIMEOUT_MS);
   // Без ключа RouterAI берём только задачи, которым модель не нужна, — иначе они бы падали по кругу.
-  const types: AiJobType[] = isAiConfigured() ? ["SCORE_LEAD", "FOLLOW_UP", "DIGEST", "SITE_CHECK", "COLD_OFFER"] : NON_AI_TYPES;
+  const types: AiJobType[] = isAiConfigured() ? ALL_TYPES : NON_AI_TYPES;
   const rows = await db.$queryRaw<AiJob[]>`
     UPDATE "AiJob" SET status = 'RUNNING', "lockedAt" = now(), attempts = attempts + 1
     WHERE id = (

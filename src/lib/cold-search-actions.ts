@@ -8,7 +8,8 @@ import { getProspectingSettings } from "@/lib/settings";
 export type SearchState = { result?: SearchResult; error?: string };
 
 /** Автоматический поиск компаний ниши в городе из настроек. */
-export async function runNicheSearch(niche: string, radiusKm: number, limit: number): Promise<SearchState> {
+/** offers — сколько первых компаний сразу получают подобранный оффер (≈15–20 ₽ за компанию при Claude Opus). */
+export async function runNicheSearch(niche: string, radiusKm: number, limit: number, offers = 10): Promise<SearchState> {
   try {
     const settings = await getProspectingSettings();
     const result = await searchNiche({
@@ -16,7 +17,7 @@ export async function runNicheSearch(niche: string, radiusKm: number, limit: num
       city: settings.region,
       radiusKm: Math.min(Math.max(Math.round(radiusKm) || 10, 1), 50),
       limit: Math.min(Math.max(Math.round(limit) || 20, 1), MAX_PER_SEARCH),
-      withOffers: 10,
+      withOffers: Math.min(Math.max(Math.round(offers) || 0, 0), MAX_PER_SEARCH),
     });
     revalidatePath("/prospecting");
     revalidatePath("/leads");

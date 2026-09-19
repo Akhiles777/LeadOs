@@ -5,7 +5,7 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { db } from "@/lib/db";
-import { setMessagesApiForTests } from "@/ai/client";
+import { AI_MODEL, setMessagesApiForTests } from "@/ai/client";
 import { claimJob, completeJob, enqueue } from "@/ai/jobs";
 import { processNextJob, scheduleDueJobs } from "@/ai/runner";
 import { assessLead } from "@/ai/tasks/assess";
@@ -15,13 +15,15 @@ import { applyRuleChange, suggestTuning, TUNING_KEY } from "@/ai/tasks/tuning";
 import { createLeadDeduped } from "@/lib/lead-service";
 
 process.env.ROUTERAI_API_KEY ||= "test-key-not-used";
-process.env.AI_MODEL ||= "openai/gpt-4o";
 process.env.AI_PRICE_INPUT_RUB_PER_1M ||= "10";
 process.env.AI_PRICE_OUTPUT_RUB_PER_1M ||= "50";
 const MARK = `AI-SMOKE-${Date.now()}`;
 
 type RequestParams = {
   model: string;
+  temperature?: number;
+  reasoning?: { effort: string };
+  plugins?: { id: string }[];
   messages: { role: string; content: string }[];
   response_format?: { type: string; json_schema?: { schema?: unknown } };
 };
@@ -29,6 +31,29 @@ type Captured = { system: string; prompt: string; params: RequestParams };
 type DigestJson = { top: { leadId: string }[] };
 const calls: Captured[] = [];
 let mode: "ok" | "refusal" | "bad" = "ok";
+let pitchCalls = 0;
+const PITCH = {
+  solutionId: "e_menu",
+  solutionTitle: "Электронное меню с заказом со стола",
+  whyThem: ["Кафе в центре, сайта нет"],
+  pitch: "Сделаю меню по QR, заказ сразу на кухню",
+  price: "25 000 ₽",
+  timeline: "7 дней",
+  firstStep: "Демо на 10 блюдах бесплатно",
+  alternatives: [],
+  confidence: "medium",
+  callScript: {
+    opening: "Здравствуйте, меня зовут [Имя], звоню по поводу меню",
+    hook: "Увидел, что меню только на бумаге",
+    relevantCase: "",
+    questions: ["Как гости сейчас заказывают?"],
+    objections: [{ objection: "Дорого", answer: "Начнём с бесплатного демо" }],
+    nextStep: "Показать демо",
+    followUpMessage: "Скинул демо меню",
+  },
+  whatsapp: "Увидел ваше кафе на Ленина — меню только на бумаге. Могу за день собрать QR-меню на 10 ваших блюд, посмотрите?",
+  email: { subject: "QR-меню для кафе", body: "Текст письма" },
+};
 
 setMessagesApiForTests({
   // Тестовая подмена: возвращаем минимальную форму Chat Completion.
@@ -41,7 +66,25 @@ setMessagesApiForTests({
     if (mode === "bad") return { model: "openai/gpt-4o", choices: [{ message: { content: "{\"text\":123}" }, finish_reason: "stop" }], usage };
 
     let parsed: unknown;
-    if (prompt.includes("Оцени этот лид")) {
+    let annotations: { type: string; url_citation: { url: string; title: string; content: string } }[] | undefined;
+    if (params.plugins?.length) {
+      parsed = {
+        found: true,
+        website: "",
+        phones: [
+          { value: "+7 (872) 211-22-33", sourceUrl: "https://2gis.ru/firm/42" },
+          { value: "+7 900 000-00-00", sourceUrl: "https://2gis.ru/firm/42" },
+        ],
+        emails: [],
+        links: [],
+        note: "совпадает адрес",
+      };
+      annotations = [{ type: "url_citation", url_citation: { url: "https://2gis.ru/firm/42", title: `${MARK} кафе`, content: `${MARK} кафе, тел. +7 (872) 211-22-33` } }];
+    } else if (prompt.includes("Подбери, что предложить")) {
+      pitchCalls++;
+      // Первый вариант со штампом — должен уйти на переписывание.
+      parsed = pitchCalls === 1 ? { ...PITCH, whatsapp: "Добрый день! Индивидуальный подход, качественно и в срок." } : PITCH;
+    } else if (prompt.includes("Оцени этот лид")) {
       parsed = {
         score: 142, // модель может выйти за границы — задача обязана зажать в 0..100
         verdict: "TAKE",
@@ -72,7 +115,7 @@ setMessagesApiForTests({
     } else {
       parsed = { text: "Здравствуйте! Сделаю сайт для вашей клиники…", notes: "Угол — онлайн-запись" };
     }
-    return { model: "openai/gpt-4o", choices: [{ message: { content: JSON.stringify(parsed) }, finish_reason: "stop" }], usage };
+    return { model: params.model, choices: [{ message: { content: JSON.stringify(parsed), annotations }, finish_reason: "stop" }], usage };
   },
 });
 
@@ -116,7 +159,9 @@ async function main() {
 
     // 4. Параметры запроса: модель, structured output, данные лида вне system
     const first = calls[0].params;
-    assert.equal(first.model, "openai/gpt-4o");
+    assert.equal(first.model, AI_MODEL);
+    assert.equal(first.temperature, undefined, "температура не задаётся — иначе тексты однотипные");
+    assert.ok(["low", "medium", "high"].includes(first.reasoning?.effort ?? ""), "уровень рассуждений передаётся");
     assert.equal(first.response_format?.type, "json_schema");
     assert.ok(first.response_format?.json_schema?.schema, "структурированный ответ");
     assert.ok(!calls[0].system.includes("сайт для стоматологии"), "данные лида не попадают в кэшируемую часть");
@@ -201,6 +246,33 @@ async function main() {
     await db.personalBrandRule.deleteMany();
     if (rulesBefore.length) await db.personalBrandRule.createMany({ data: rulesBefore });
     await db.appSetting.deleteMany({ where: { key: TUNING_KEY } });
+
+    // 12. Холодная компания: проверка сайта → поиск контактов (только подтверждённые) → оффер со штампом переписан
+    const cafe = await db.lead.create({
+      data: { source: "COLD_LOCAL", title: `${MARK} кафе`, rawText: "Ниша: кафе\nАдрес: Махачкала, Ленина, 1", category: "кафе", region: "Махачкала" },
+    });
+    await db.aiJob.deleteMany({ where: { status: "PENDING" , createdAt: { gte: started } } });
+    await enqueue("COLD_OFFER", cafe.id, new Date(0));
+    await enqueue("SITE_CHECK", cafe.id, new Date(1000));
+    for (let i = 0; i < 10 && (await processNextJob()); i++) {
+      // отложенные задачи ставятся на минуту вперёд — в тесте возвращаем их сразу
+      await db.aiJob.updateMany({ where: { leadId: cafe.id, status: "PENDING" }, data: { runAfter: new Date(0) } });
+    }
+    const jobs = await db.aiJob.findMany({ where: { leadId: cafe.id }, orderBy: { createdAt: "asc" } });
+    assert.deepEqual(jobs.map((j) => `${j.type}:${j.status}`).sort(), ["COLD_OFFER:DONE", "FIND_CONTACTS:DONE", "SITE_CHECK:DONE"]);
+    const contactsCall = calls.find((c) => c.params.plugins?.length);
+    assert.ok(contactsCall, "поиск контактов с веб-поиском");
+    const done = await db.lead.findUniqueOrThrow({ where: { id: cafe.id }, include: { offers: true } });
+    assert.equal(done.contactPhone, "+7 872 211-22-33", "подтверждённый номер сохранён");
+    assert.ok(!JSON.stringify(done.contacts).includes("900 000"), "выдуманный номер отброшен");
+    assert.ok(done.contactsSearchedAt);
+    assert.equal((done.pitch as { solutionTitle?: string }).solutionTitle, PITCH.solutionTitle);
+    assert.equal(pitchCalls, 2, "текст со штампами переписан один раз");
+    assert.deepEqual(done.offers.map((o) => o.channel).sort(), ["cold_call_script", "cold_message"], "письмо не пишем, если почты нет, а телефон есть");
+    assert.ok(done.offers.find((o) => o.channel === "cold_message")!.text.startsWith("Увидел ваше кафе"));
+    const pitchPrompt = calls.filter((c) => c.prompt.includes("Подбери, что предложить")).at(-1)!.prompt;
+    assert.ok(pitchPrompt.includes("<solutions>") && pitchPrompt.includes("e_menu"), "каталог решений в промпте");
+    assert.ok(pitchPrompt.includes("Каналы связи: Телефон"), "AI знает, какие есть каналы");
 
     console.log(`ok — ${calls.length} подменённых вызовов модели, все проверки пройдены`);
   } finally {

@@ -10,10 +10,15 @@ import {
   SOURCE_LABEL,
 } from "@/lib/leads";
 import type { SiteCheck } from "@/lib/site-check";
+import { isAiConfigured } from "@/ai/client";
 import { channelsFor, DRAFT_CHANNELS, type DraftChannel } from "@/ai/tasks/drafts";
+import { readPitch } from "@/ai/tasks/pitch";
 import { AiAssessment } from "@/components/ai-assessment";
-import { DraftEditor, GenerateButtons } from "@/components/ai-panels";
-import { ContactLinks } from "@/components/contact-links";
+import { DraftEditor, FindContactsButton, GenerateButtons, type SendTargets } from "@/components/ai-panels";
+import { ContactLinks, ContactList } from "@/components/contact-links";
+import { PitchPanel } from "@/components/pitch-panel";
+import { allContacts, phoneDigits } from "@/lib/contacts";
+import { mapLookupLinks } from "@/lib/osm";
 import { DealPanel } from "@/components/deal-panel";
 import { ActionForm } from "@/components/action-form";
 import { CallControls } from "@/components/call-controls";
@@ -42,6 +47,18 @@ export default async function LeadPage(props: PageProps<"/leads/[id]">) {
   if (!lead) notFound();
   const referrers = await db.lead.findMany({ where: { status: "WON" }, orderBy: { updatedAt: "desc" }, take: 300, select: { id: true, title: true } });
 
+  const contacts = allContacts(lead);
+  const waContact = contacts.find((c) => c.kind === "whatsapp") ?? contacts.find((c) => c.kind === "phone");
+  const sendTo: SendTargets = {
+    whatsapp: waContact ? phoneDigits(waContact.value) : null,
+    email: contacts.find((c) => c.kind === "email")?.value ?? null,
+    telegram: contacts.find((c) => c.kind === "telegram")?.value ?? null,
+  };
+  // Свои предложения (холодные, ручные, рекомендации) — с подбором решения; на заказы Kwork/Telegram отвечаем по их задаче.
+  const offerOwn = lead.source !== "KWORK" && lead.source !== "TELEGRAM";
+  const aiReady = isAiConfigured();
+  const address = /Адрес: (.+)/.exec(lead.rawText)?.[1] ?? null;
+  const maps = mapLookupLinks(lead.title, address, lead.region);
 
   return (
     <>
@@ -85,6 +102,12 @@ export default async function LeadPage(props: PageProps<"/leads/[id]">) {
             </Card>
           )}
 
+          {offerOwn && lead.status !== "WON" && (
+            <Card title="Что предложить">
+              <PitchPanel leadId={lead.id} pitch={readPitch(lead.pitch)} aiReady={aiReady} />
+            </Card>
+          )}
+
           <Card title="Черновики сообщений">
             <div className="flex flex-col gap-4">
               <GenerateButtons leadId={lead.id} channels={channelsFor(lead)} labels={channelLabels} />
@@ -95,6 +118,8 @@ export default async function LeadPage(props: PageProps<"/leads/[id]">) {
                   <DraftEditor
                     key={d.id}
                     label={DRAFT_CHANNELS[d.channel as DraftChannel]?.label ?? d.channel}
+                    channel={d.channel}
+                    sendTo={lead.source === "KWORK" ? {} : sendTo}
                     draft={{
                       id: d.id,
                       text: d.text,
@@ -124,16 +149,36 @@ export default async function LeadPage(props: PageProps<"/leads/[id]">) {
         </div>
 
         <div className="flex flex-col gap-6 lg:col-span-2">
-          {lead.source === "COLD_LOCAL" && (
-            <Card title="Звонок">
+          <Card title="Контакты">
+            <div className="flex flex-col gap-3">
               {lead.contactPhone && (
-                <a href={`tel:${lead.contactPhone.replace(/[^\d+]/g, "")}`} className="mb-3 block text-lg font-semibold tabular-nums underline">
+                <a href={`tel:${lead.contactPhone.replace(/[^\d+]/g, "")}`} className="block text-lg font-semibold tabular-nums underline">
                   {lead.contactPhone}
                 </a>
               )}
-              <CallControls leadId={lead.id} />
-            </Card>
-          )}
+              {contacts.length ? (
+                <ContactList contacts={contacts} />
+              ) : (
+                <p className="text-sm text-zinc-500">{lead.source === "KWORK" ? "На Kwork общение идёт через площадку." : "Контактов пока нет."}</p>
+              )}
+              {offerOwn && (
+                <>
+                  {aiReady && <FindContactsButton leadId={lead.id} searchedAt={lead.contactsSearchedAt ? formatDate(lead.contactsSearchedAt, true) : null} />}
+                  <p className="text-xs text-zinc-500">
+                    Найти на картах:{" "}
+                    <a href={maps.yandex} target="_blank" rel="noreferrer" className="underline">
+                      Яндекс ↗
+                    </a>{" "}
+                    <a href={maps.twoGis} target="_blank" rel="noreferrer" className="underline">
+                      2ГИС ↗
+                    </a>{" "}
+                    — закладка «→ LeadOS (карты)» допишет контакты сюда.
+                  </p>
+                </>
+              )}
+              {lead.source === "COLD_LOCAL" && <CallControls leadId={lead.id} />}
+            </div>
+          </Card>
 
           <Card title="Добавить в историю">
             <ActionForm action={addActivity.bind(null, lead.id)} submitLabel="Добавить" resetOnSuccess>

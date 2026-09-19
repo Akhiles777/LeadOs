@@ -4,6 +4,9 @@ import { saveProspecting } from "@/lib/cold-actions";
 import { db } from "@/lib/db";
 import { daysSince, formatDate, STATUS_LABEL } from "@/lib/leads";
 import { mapLookupLinks, OSM_ATTRIBUTION } from "@/lib/osm";
+import { allContacts, hasReachableContact } from "@/lib/contacts";
+import { readPitch } from "@/ai/tasks/pitch";
+import { ContactLinks } from "@/components/contact-links";
 import { getProspectingSettings, mapSearchLinks } from "@/lib/settings";
 import { nicheStats } from "@/lib/report";
 import { loadReportLeads } from "@/lib/report-data";
@@ -21,7 +24,7 @@ export const maxDuration = 300;
 
 export default async function ProspectingPage() {
   await connection();
-  const [settings, leads, statusCounts, yearLeads] = await Promise.all([
+  const [settings, leads, statusCounts, yearLeads, jobs] = await Promise.all([
     getProspectingSettings(),
     db.lead.findMany({
       where: { source: "COLD_LOCAL", status: { in: ["NEW", "QUALIFIED", "CONTACTED"] } },
@@ -30,20 +33,44 @@ export default async function ProspectingPage() {
     }),
     db.lead.groupBy({ by: ["status"], where: { source: "COLD_LOCAL" }, _count: { _all: true } }),
     loadReportLeads("365d"),
+    db.aiJob.findMany({
+      where: { type: { in: ["SITE_CHECK", "FIND_CONTACTS", "COLD_OFFER"] }, status: { in: ["PENDING", "RUNNING"] }, leadId: { not: null } },
+      select: { leadId: true, type: true },
+      take: 1000,
+    }),
   ]);
+  // Что сейчас делается по компании в фоне — чтобы было видно, что контакты и оффер «в пути».
+  const inWork = new Map<string, string>();
+  const WORK_LABEL = { SITE_CHECK: "проверяю сайт", FIND_CONTACTS: "ищу контакты в интернете", COLD_OFFER: "подбираю оффер" } as const;
+  for (const j of jobs) {
+    const label = WORK_LABEL[j.type as keyof typeof WORK_LABEL];
+    if (j.leadId && label) inWork.set(j.leadId, inWork.has(j.leadId) ? `${inWork.get(j.leadId)}, ${label}` : label);
+  }
   // Какие ниши отвечают и платят — чтобы искать там, где уже получалось. Доля — только если звонков хватает для вывода.
   const nicheResults = new Map(nicheStats(yearLeads.leads, settings.niches).map((n) => [n.niche, n]));
   const MIN_CALLED = 3;
 
   const now = new Date();
-  // Сначала те, кому пора перезвонить; дальше — по перспективности, новые раньше старых.
+  // Сначала те, кому пора перезвонить; дальше — с кем можно связаться, по перспективности, новые раньше старых.
   const rows = leads
-    .map((lead) => ({ lead, opp: opportunity(lead.siteCheck as unknown as SiteCheck | null, lead.category) }))
+    .map((lead) => ({
+      lead,
+      opp: opportunity(lead.siteCheck as unknown as SiteCheck | null, lead.category),
+      reachable: hasReachableContact(allContacts(lead)),
+      pitch: readPitch(lead.pitch),
+    }))
     .sort((a, b) => {
       const dueA = a.lead.followUpAt && a.lead.followUpAt <= now ? 0 : 1;
       const dueB = b.lead.followUpAt && b.lead.followUpAt <= now ? 0 : 1;
-      return dueA - dueB || LEVEL_ORDER[a.opp.level] - LEVEL_ORDER[b.opp.level] || b.opp.points - a.opp.points || b.lead.createdAt.getTime() - a.lead.createdAt.getTime();
+      return (
+        dueA - dueB ||
+        Number(b.reachable) - Number(a.reachable) ||
+        LEVEL_ORDER[a.opp.level] - LEVEL_ORDER[b.opp.level] ||
+        b.opp.points - a.opp.points ||
+        b.lead.createdAt.getTime() - a.lead.createdAt.getTime()
+      );
     });
+  const reachableCount = rows.filter((r) => r.reachable).length;
 
   const total = statusCounts.reduce((sum, s) => sum + s._count._all, 0);
   const count = (status: string) => statusCounts.find((s) => s.status === status)?._count._all ?? 0;
@@ -102,8 +129,8 @@ export default async function ProspectingPage() {
             })}
           </ul>
           <p className="mt-3 text-xs text-zinc-500">
-            «Найти автоматически» — компании из OpenStreetMap: сразу с адресом, проверкой сайта и скриптом звонка.
-            Телефон там есть не у всех — у кого нет, добери на картах кнопкой в списке обзвона. {OSM_ATTRIBUTION}.
+            «Найти автоматически» — компании из OpenStreetMap. Дальше само: контакты с их сайтов, поиск контактов в интернете для тех,
+            у кого их нет, подобранное решение (меню, запись в WhatsApp, CRM…) со скриптом звонка, сообщением и письмом. {OSM_ATTRIBUTION}.
             <br />
             Ссылки «Яндекс» и «2ГИС» — ручной поиск: открой карточку компании и нажми закладку.{" "}
             <Link href="/bookmarklet" className="underline">
@@ -124,12 +151,12 @@ export default async function ProspectingPage() {
           </details>
         </Card>
 
-        <Card title={`Обзвон (${rows.length})`} className="lg:col-span-3">
+        <Card title={`Обзвон (${rows.length}${rows.length ? ` · с контактами ${reachableCount}` : ""})`} className="lg:col-span-3">
           {rows.length === 0 ? (
             <EmptyState>Пока некому звонить — добавь компании с карт</EmptyState>
           ) : (
             <ul className="divide-y divide-zinc-100 dark:divide-zinc-900">
-              {rows.map(({ lead, opp }) => {
+              {rows.map(({ lead, opp, reachable, pitch }) => {
                 const lastCall = lead.activities[0];
                 const due = lead.followUpAt && lead.followUpAt <= now;
                 return (
@@ -147,14 +174,27 @@ export default async function ProspectingPage() {
                       </div>
                     </div>
 
+                    {pitch && (
+                      <p className="text-sm">
+                        <span className="text-zinc-500">Предложить:</span> <b>{pitch.solutionTitle}</b> · {pitch.price}{" "}
+                        <Link href={`/leads/${lead.id}`} className="text-xs underline">
+                          тексты →
+                        </Link>
+                      </p>
+                    )}
+                    {inWork.has(lead.id) && <p className="text-xs text-sky-700 dark:text-sky-400">В работе: {inWork.get(lead.id)}…</p>}
+
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-                      {lead.contactPhone ? (
+                      {lead.contactPhone && (
                         <a href={`tel:${lead.contactPhone.replace(/[^\d+]/g, "")}`} className="font-medium tabular-nums underline">
                           {lead.contactPhone}
                         </a>
+                      )}
+                      {reachable ? (
+                        <ContactLinks lead={{ ...lead, website: null, sourceRef: null }} />
                       ) : (
                         <span className="flex flex-wrap items-center gap-2 text-xs text-zinc-500">
-                          телефона нет — найти:
+                          контактов нет — найти:
                           <a href={mapLookupLinks(lead.title, null, lead.region).yandex} target="_blank" rel="noreferrer" className="underline">
                             Яндекс ↗
                           </a>

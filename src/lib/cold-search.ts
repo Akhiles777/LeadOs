@@ -1,12 +1,13 @@
 /**
- * Автоматический поиск компаний по нише и городу: OpenStreetMap → лиды → проверка сайта и примерный оффер.
- * Что нашли, складываем к себе (лицензия OSM это разрешает), телефон добираем по кнопке в списке обзвона.
+ * Автоматический поиск компаний по нише и городу: OpenStreetMap → лиды → проверка сайта (там же контакты) →
+ * поиск контактов в интернете, если их всё ещё нет → подобранный оффер. Лицензия OSM разрешает хранить данные у себя.
  */
 import type { Prisma } from "@/generated/prisma/client";
 import { autoScoreEnabled, enqueue } from "@/ai/jobs";
 import { db } from "@/lib/db";
 import { normalizePhone } from "@/lib/lead-input";
-import { geocodeCity, mapLookupLinks, type OsmPlace, OSM_ATTRIBUTION, searchPlaces, tagsForNiche } from "@/lib/osm";
+import { hasReachableContact } from "@/lib/contacts";
+import { geocodeCity, mapLookupLinks, type OsmPlace, OSM_ATTRIBUTION, searchPlaces, siteHost, tagsForNiche } from "@/lib/osm";
 
 export const MAX_PER_SEARCH = 60;
 const GEO_KEY = "geocode";
@@ -17,6 +18,10 @@ export type SearchResult = {
   duplicates: number;
   withPhone: number;
   withSite: number;
+  /** Сразу с телефоном, мессенджером или почтой. */
+  reachable: number;
+  /** Пропущено федеральных сетей: продавать им надо в центральный офис, а не филиалу. */
+  chains: number;
   city: string;
   offersQueued: number;
 };
@@ -40,14 +45,14 @@ function leadText(place: OsmPlace, niche: string): string {
     `Ниша: ${niche}`,
     place.address ? `Адрес: ${place.address}` : "",
     place.openingHours ? `Часы работы: ${place.openingHours}` : "",
-    place.phone ? "" : "Телефон не указан в источнике — добери на картах кнопкой «найти телефон»",
+    ...place.details,
     `Источник: ${OSM_ATTRIBUTION}, ${place.osmUrl}`,
   ]
     .filter(Boolean)
     .join("\n");
 }
 
-/** Уже есть такая компания? Считаем по ссылке на объект, телефону и по названию в том же городе. */
+/** Уже есть такая компания? Считаем по ссылке на объект, телефону, сайту и по названию в том же городе. */
 async function findExisting(place: OsmPlace, region: string): Promise<string | null> {
   const phone = place.phone ? normalizePhone(place.phone) : null;
   const existing = await db.lead.findFirst({
@@ -55,6 +60,7 @@ async function findExisting(place: OsmPlace, region: string): Promise<string | n
       OR: [
         { sourceRef: place.osmUrl },
         ...(phone?.startsWith("+7 ") ? [{ contactPhone: phone }] : []),
+        ...(place.website ? [{ website: { contains: siteHost(place.website), mode: "insensitive" as const } }] : []),
         { title: { equals: place.name, mode: "insensitive" as const }, region: { equals: region, mode: "insensitive" as const } },
       ],
     },
@@ -72,10 +78,14 @@ export async function searchNiche(params: { niche: string; city: string; radiusK
   const limit = Math.min(Math.max(params.limit, 1), MAX_PER_SEARCH);
   const places = await searchPlaces({ tags: mapping.tags, lat, lon, radiusM: Math.min(Math.max(params.radiusKm, 1), 50) * 1000, limit: limit * 3 });
 
-  const result: SearchResult = { found: places.length, created: 0, duplicates: 0, withPhone: 0, withSite: 0, city: params.city, offersQueued: 0 };
+  const result: SearchResult = { found: places.length, created: 0, duplicates: 0, withPhone: 0, withSite: 0, reachable: 0, chains: 0, city: params.city, offersQueued: 0 };
 
   for (const place of places) {
     if (result.created >= limit) break;
+    if (place.chain) {
+      result.chains++;
+      continue;
+    }
     if (await findExisting(place, params.city)) {
       result.duplicates++;
       continue;
@@ -89,6 +99,9 @@ export async function searchNiche(params: { niche: string; city: string; radiusK
         category: params.niche,
         region: place.city ?? params.city,
         contactPhone: place.phone ? normalizePhone(place.phone) : null,
+        contactEmail: place.contacts.find((c) => c.kind === "email")?.value ?? null,
+        contactTg: place.contacts.find((c) => c.kind === "telegram")?.value ?? null,
+        contacts: place.contacts.length ? (place.contacts as unknown as Prisma.InputJsonArray) : undefined,
         website: place.website,
       },
       select: { id: true, website: true },
@@ -96,8 +109,10 @@ export async function searchNiche(params: { niche: string; city: string; radiusK
     result.created++;
     if (place.phone) result.withPhone++;
     if (place.website) result.withSite++;
+    if (hasReachableContact(place.contacts)) result.reachable++;
 
-    // Сайт проверяем всегда: без сайта результат «нет сайта» — это лучший аргумент для звонка.
+    // Сайт проверяем всегда: там контакты и детали для оффера, а «нет сайта» — лучший аргумент для звонка.
+    // Если после проверки связаться не с кем, очередь сама поставит поиск контактов в интернете.
     await enqueue("SITE_CHECK", lead.id);
     if (autoScoreEnabled() && result.offersQueued < params.withOffers) {
       await enqueue("COLD_OFFER", lead.id, new Date(Date.now() + 60_000));
